@@ -230,14 +230,16 @@ def log_action(chat_id: int, action_type: str, action_data: dict = None):
     execute_query("INSERT INTO user_actions (chat_id, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
                   (chat_id, action_type, json.dumps(action_data) if action_data else None, datetime.now()))
 
-# ==================== КЭШ АУДИО ====================
+# ==================== УСКОРЕННЫЙ КЭШ АУДИО ====================
 @lru_cache(maxsize=100)
 def get_cached_audio_url(url: str) -> Optional[str]:
+    # Более быстрые настройки для yt-dlp
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'format': 'bestaudio/best',
-        'extract_flat': False,
+        'format': 'bestaudio',  # вместо bestaudio/best
+        'extract_flat': 'in_playlist',  # ускоряет извлечение
+        'prefer_free_formats': True,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
