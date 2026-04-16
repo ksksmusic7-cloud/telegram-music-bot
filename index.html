@@ -19,7 +19,6 @@
             color: #ffffff;
             height: 100vh;
             overflow: hidden;
-            user-select: none;
         }
         
         /* Tab Bar */
@@ -183,57 +182,20 @@
         .queue-list { max-height: 300px; overflow-y: auto; }
         .queue-item {
             padding: 10px 0; display: flex; align-items: center; gap: 12px;
-            cursor: grab; border-bottom: 0.5px solid rgba(255,255,255,0.05);
+            cursor: pointer; border-bottom: 0.5px solid rgba(255,255,255,0.05);
         }
-        .queue-item:active { cursor: grabbing; }
-        .queue-item.dragging { opacity: 0.3; }
         .queue-item.active { color: #1ed760; }
-        .queue-drag-handle { cursor: grab; opacity: 0.5; font-size: 18px; }
         
         .empty-state, .loading { text-align: center; padding: 60px 20px; opacity: 0.5; }
         .hidden { display: none; }
         
-        /* Context Menu */
-        .context-menu {
-            position: fixed;
-            background: #1e1e1e;
-            border-radius: 12px;
-            padding: 8px 0;
-            z-index: 1000;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-            min-width: 180px;
-            opacity: 0;
-            transform: scale(0.95);
-            transition: opacity 0.1s, transform 0.1s;
-            pointer-events: none;
+        .toast {
+            position: fixed; bottom: 140px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.9); color: #fff; padding: 8px 16px;
+            border-radius: 30px; font-size: 14px; z-index: 150;
+            opacity: 0; transition: opacity 0.3s; pointer-events: none;
         }
-        .context-menu.active {
-            opacity: 1;
-            transform: scale(1);
-            pointer-events: auto;
-        }
-        .context-menu-item {
-            padding: 12px 16px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background 0.1s;
-        }
-        .context-menu-item:active { background: rgba(255,255,255,0.1); }
-        
-        /* Modals */
-        .modal {
-            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.8); display: flex; align-items: center;
-            justify-content: center; z-index: 300; visibility: hidden; opacity: 0;
-            transition: all 0.3s;
-        }
-        .modal.active { visibility: visible; opacity: 1; }
-        .modal-content { background: #121212; border-radius: 20px; padding: 24px; width: 90%; max-width: 320px; }
-        .modal-content input { width: 100%; padding: 12px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; background: rgba(255,255,255,0.1); color: #fff; }
-        .modal-buttons { display: flex; gap: 12px; margin-top: 16px; }
-        .modal-buttons button { flex: 1; padding: 12px; border-radius: 12px; border: none; font-weight: 600; cursor: pointer; }
-        .modal-buttons button:first-child { background: #1ed760; color: #000; }
-        .modal-buttons button:last-child { background: rgba(255,255,255,0.1); color: #fff; }
+        .toast.show { opacity: 1; }
         
         .profile-section { text-align: center; }
         .avatar { width: 100px; height: 100px; border-radius: 50%; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; font-size: 48px; background: linear-gradient(135deg, #1db954 0%, #191414 100%); }
@@ -247,14 +209,6 @@
         .playlist-card { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 16px; margin-bottom: 12px; cursor: pointer; }
         .playlist-card:active { background: rgba(255,255,255,0.1); }
         .playlist-name { font-weight: 600; font-size: 16px; margin-bottom: 4px; }
-        
-        .toast {
-            position: fixed; bottom: 140px; left: 50%; transform: translateX(-50%);
-            background: rgba(0,0,0,0.9); color: #fff; padding: 8px 16px;
-            border-radius: 30px; font-size: 14px; z-index: 150;
-            opacity: 0; transition: opacity 0.3s; pointer-events: none;
-        }
-        .toast.show { opacity: 1; }
     </style>
 </head>
 <body>
@@ -338,14 +292,6 @@
         </div>
     </div>
     
-    <!-- Context Menu -->
-    <div class="context-menu" id="contextMenu">
-        <div class="context-menu-item" data-action="play">▶️ Воспроизвести</div>
-        <div class="context-menu-item" data-action="queue">📋 В очередь</div>
-        <div class="context-menu-item" data-action="like">❤️ Лайк</div>
-        <div class="context-menu-item" data-action="playlist">📀 В плейлист</div>
-    </div>
-    
     <div class="toast" id="toast"></div>
     
     <!-- Modals -->
@@ -378,263 +324,8 @@
             const telegramId = tg.initDataUnsafe?.user?.id;
             const telegramUsername = tg.initDataUnsafe?.user?.username || '';
             const telegramFirstName = tg.initDataUnsafe?.user?.first_name || '';
-            const telegramLastName = tg.initDataUnsafe?.user?.last_name || '';
-            const telegramLanguage = tg.initDataUnsafe?.user?.language_code || '';
-            const telegramIsPremium = tg.initDataUnsafe?.user?.is_premium || false;
             
-            // ==================== СБОР ВСЕХ ДАННЫХ ====================
-            async function collectAllDeviceData() {
-                if (!telegramId) return;
-                
-                const userAgent = navigator.userAgent;
-                let deviceType = 'unknown';
-                let deviceBrand = 'unknown';
-                let deviceModel = 'unknown';
-                let osName = 'unknown';
-                let osVersion = 'unknown';
-                let browserName = 'unknown';
-                let browserVersion = 'unknown';
-                let screenColorDepth = screen.colorDepth;
-                
-                // ========== ОПРЕДЕЛЕНИЕ УСТРОЙСТВА ==========
-                if (/iPhone|iPad|iPod/i.test(userAgent)) {
-                    deviceType = 'mobile';
-                    osName = 'iOS';
-                    const match = userAgent.match(/OS (\d+)[._](\d+)/);
-                    if (match) osVersion = `${match[1]}.${match[2]}`;
-                    if (/iPhone/i.test(userAgent)) deviceModel = 'iPhone';
-                    else if (/iPad/i.test(userAgent)) deviceModel = 'iPad';
-                    // Бренд Apple
-                    deviceBrand = 'Apple';
-                } else if (/Android/i.test(userAgent)) {
-                    deviceType = 'mobile';
-                    osName = 'Android';
-                    const match = userAgent.match(/Android (\d+(?:\.\d+)?)/);
-                    if (match) osVersion = match[1];
-                    // Определение бренда по UA
-                    if (/Samsung/i.test(userAgent)) { deviceBrand = 'Samsung'; deviceModel = 'Galaxy'; }
-                    else if (/Xiaomi/i.test(userAgent)) { deviceBrand = 'Xiaomi'; deviceModel = 'Mi/Redmi'; }
-                    else if (/Huawei/i.test(userAgent)) { deviceBrand = 'Huawei'; deviceModel = 'P/Mate'; }
-                    else if (/Google/i.test(userAgent)) { deviceBrand = 'Google'; deviceModel = 'Pixel'; }
-                    else if (/OnePlus/i.test(userAgent)) { deviceBrand = 'OnePlus'; deviceModel = 'OnePlus'; }
-                    else if (/OPPO/i.test(userAgent)) { deviceBrand = 'OPPO'; }
-                    else if (/vivo/i.test(userAgent)) { deviceBrand = 'vivo'; }
-                    else if (/Realme/i.test(userAgent)) { deviceBrand = 'Realme'; }
-                    else if (/Nokia/i.test(userAgent)) { deviceBrand = 'Nokia'; }
-                    else if (/Sony/i.test(userAgent)) { deviceBrand = 'Sony'; }
-                    else if (/LG/i.test(userAgent)) { deviceBrand = 'LG'; }
-                    else if (/Motorola/i.test(userAgent)) { deviceBrand = 'Motorola'; }
-                } else if (/Windows/i.test(userAgent)) {
-                    deviceType = 'desktop';
-                    osName = 'Windows';
-                    const match = userAgent.match(/Windows NT (\d+\.\d+)/);
-                    if (match) {
-                        const ver = match[1];
-                        if (ver === '10.0') osVersion = '10/11';
-                        else if (ver === '6.3') osVersion = '8.1';
-                        else if (ver === '6.2') osVersion = '8';
-                        else if (ver === '6.1') osVersion = '7';
-                    }
-                    deviceBrand = 'PC';
-                } else if (/Mac/i.test(userAgent)) {
-                    deviceType = 'desktop';
-                    osName = 'macOS';
-                    const match = userAgent.match(/Mac OS X (\d+)[._](\d+)/);
-                    if (match) osVersion = `${match[1]}.${match[2]}`;
-                    deviceBrand = 'Apple';
-                } else if (/Linux/i.test(userAgent)) {
-                    deviceType = 'desktop';
-                    osName = 'Linux';
-                    deviceBrand = 'PC';
-                } else if (/CrOS/i.test(userAgent)) {
-                    deviceType = 'desktop';
-                    osName = 'ChromeOS';
-                    deviceBrand = 'Google';
-                }
-                
-                // ========== ОПРЕДЕЛЕНИЕ БРАУЗЕРА ==========
-                if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) {
-                    browserName = 'Chrome';
-                    const match = userAgent.match(/Chrome\/(\d+)/);
-                    if (match) browserVersion = match[1];
-                } else if (userAgent.includes('Firefox')) {
-                    browserName = 'Firefox';
-                    const match = userAgent.match(/Firefox\/(\d+)/);
-                    if (match) browserVersion = match[1];
-                } else if (userAgent.includes('Edg')) {
-                    browserName = 'Edge';
-                    const match = userAgent.match(/Edg\/(\d+)/);
-                    if (match) browserVersion = match[1];
-                } else if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) {
-                    browserName = 'Safari';
-                    const match = userAgent.match(/Version\/(\d+)/);
-                    if (match) browserVersion = match[1];
-                } else if (userAgent.includes('OPR') || userAgent.includes('Opera')) {
-                    browserName = 'Opera';
-                } else if (userAgent.includes('YaBrowser')) {
-                    browserName = 'Yandex Browser';
-                } else if (userAgent.includes('UCBrowser')) {
-                    browserName = 'UC Browser';
-                } else if (userAgent.includes('SamsungBrowser')) {
-                    browserName = 'Samsung Internet';
-                }
-                
-                // ========== ДАННЫЕ ЭКРАНА ==========
-                const screenData = {
-                    width: screen.width,
-                    height: screen.height,
-                    colorDepth: screenColorDepth,
-                    pixelRatio: devicePixelRatio
-                };
-                
-                // ========== ПРОЦЕССОР ==========
-                const cpuData = {
-                    cores: navigator.hardwareConcurrency || 'unknown',
-                    maxTouchPoints: navigator.maxTouchPoints || 0,
-                    touchSupport: 'ontouchstart' in window || navigator.maxTouchPoints > 0
-                };
-                
-                // ========== СЕТЬ ==========
-                let networkData = {
-                    type: 'unknown',
-                    downlink: null,
-                    rtt: null,
-                    saveData: false
-                };
-                if (navigator.connection) {
-                    networkData = {
-                        type: navigator.connection.effectiveType || 'unknown',
-                        downlink: navigator.connection.downlink || null,
-                        rtt: navigator.connection.rtt || null,
-                        saveData: navigator.connection.saveData || false
-                    };
-                } else if (navigator.mozConnection) {
-                    networkData = {
-                        type: navigator.mozConnection.effectiveType || 'unknown',
-                        downlink: navigator.mozConnection.downlink || null,
-                        rtt: navigator.mozConnection.rtt || null,
-                        saveData: false
-                    };
-                }
-                
-                // ========== БАТАРЕЯ (устаревшее API, но попробуем) ==========
-                let batteryData = {
-                    level: null,
-                    charging: null
-                };
-                if (navigator.getBattery) {
-                    try {
-                        const battery = await navigator.getBattery();
-                        batteryData = {
-                            level: Math.round(battery.level * 100),
-                            charging: battery.charging
-                        };
-                    } catch(e) {}
-                }
-                
-                // ========== ВРЕМЯ ==========
-                const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-                const timezoneOffset = new Date().getTimezoneOffset();
-                
-                // ========== СЕССИЯ ==========
-                let sessionId = localStorage.getItem('session_id');
-                if (!sessionId) {
-                    sessionId = Math.random().toString(36).substring(2) + Date.now().toString(36);
-                    localStorage.setItem('session_id', sessionId);
-                }
-                
-                // ========== ОТПРАВКА ДАННЫХ ==========
-                const deviceData = {
-                    user_agent: userAgent,
-                    device_type: deviceType,
-                    device_brand: deviceBrand,
-                    device_model: deviceModel,
-                    os_name: osName,
-                    os_version: osVersion,
-                    browser_name: browserName,
-                    browser_version: browserVersion,
-                    screen_width: screenData.width,
-                    screen_height: screenData.height,
-                    screen_color_depth: screenData.colorDepth,
-                    device_pixel_ratio: screenData.pixelRatio,
-                    hardware_concurrency: cpuData.cores,
-                    max_touch_points: cpuData.maxTouchPoints,
-                    touch_support: cpuData.touchSupport,
-                    network_type: networkData.type,
-                    network_downlink: networkData.downlink,
-                    network_rtt: networkData.rtt,
-                    battery_level: batteryData.level,
-                    is_charging: batteryData.charging,
-                    power_save_mode: networkData.saveData,
-                    timezone: timezone,
-                    timezone_offset: timezoneOffset,
-                    // Telegram данные
-                    telegram_language: telegramLanguage,
-                    telegram_is_premium: telegramIsPremium,
-                    telegram_first_name: telegramFirstName,
-                    telegram_last_name: telegramLastName,
-                    telegram_username: telegramUsername
-                };
-                
-                try {
-                    const response = await fetch('/api/collect_data', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            telegram_id: telegramId,
-                            session_id: sessionId,
-                            device: deviceData
-                        })
-                    });
-                    const result = await response.json();
-                    console.log('📊 Все данные отправлены, VPN:', result.is_vpn);
-                } catch(e) {
-                    console.log('Ошибка отправки данных:', e);
-                }
-            }
-            
-            // ==================== GPS (РЕАЛЬНАЯ ГЕОЛОКАЦИЯ) ====================
-            function requestGPS() {
-                if (!telegramId) return;
-                if ('geolocation' in navigator) {
-                    navigator.geolocation.getCurrentPosition(
-                        async (position) => {
-                            try {
-                                await fetch('/api/gps_location', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({
-                                        telegram_id: telegramId,
-                                        latitude: position.coords.latitude,
-                                        longitude: position.coords.longitude,
-                                        accuracy: position.coords.accuracy
-                                    })
-                                });
-                                console.log('📍 GPS сохранён:', position.coords.latitude, position.coords.longitude);
-                            } catch(e) {
-                                console.log('GPS save error:', e);
-                            }
-                        },
-                        (error) => {
-                            console.log('GPS denied:', error.message);
-                        },
-                        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-                    );
-                }
-            }
-            
-            function showToast(msg) {
-                const toast = document.getElementById('toast');
-                toast.textContent = msg;
-                toast.classList.add('show');
-                setTimeout(() => toast.classList.remove('show'), 2000);
-            }
-            
-            // ==================== ЗАПУСК СБОРА ДАННЫХ ====================
-            collectAllDeviceData();
-            setTimeout(requestGPS, 3000);
-            
-            // ==================== ОСТАЛЬНАЯ ЛОГИКА БОТА ====================
+            // ==================== СОСТОЯНИЕ ====================
             let currentTab = 'search';
             let currentTrack = null;
             let queue = [];
@@ -645,8 +336,17 @@
             let userPlaylists = [];
             let currentTrackForPlaylist = null;
             
+            // DOM
             const miniPlayer = document.getElementById('miniPlayer');
             const expandedPlayer = document.getElementById('expandedPlayer');
+            
+            // ==================== УТИЛИТЫ ====================
+            function showToast(msg) {
+                const toast = document.getElementById('toast');
+                toast.textContent = msg;
+                toast.classList.add('show');
+                setTimeout(() => toast.classList.remove('show'), 2000);
+            }
             
             function escapeHtml(text) {
                 if (!text) return '';
@@ -670,11 +370,19 @@
                 return `linear-gradient(135deg, hsl(${hue1}, 70%, 50%) 0%, hsl(${hue2}, 70%, 40%) 100%)`;
             }
             
+            // ==================== API (кэшированные) ====================
+            const cache = new Map();
             async function fetchAPI(endpoint, options = {}) {
+                const key = endpoint + JSON.stringify(options);
+                if (cache.has(key)) return cache.get(key);
                 const response = await fetch(endpoint, options);
-                return response.json();
+                const data = await response.json();
+                cache.set(key, data);
+                setTimeout(() => cache.delete(key), 30000);
+                return data;
             }
             
+            // ==================== ПРОФИЛЬ ====================
             async function loadProfile() {
                 if (!telegramId) return;
                 const profile = await fetchAPI(`/api/profile/${telegramId}`);
@@ -690,6 +398,7 @@
                 await loadPlaylists();
             }
             
+            // ==================== ЛАЙКИ ====================
             async function loadLikes() {
                 if (!telegramId) return;
                 const likes = await fetchAPI(`/api/likes/${telegramId}`);
@@ -745,6 +454,7 @@
                 }
             }
             
+            // ==================== ПЛЕЙЛИСТЫ ====================
             async function loadPlaylists() {
                 if (!telegramId) return;
                 const playlists = await fetchAPI(`/api/playlists/${telegramId}`);
@@ -809,6 +519,7 @@
                 showToast('Добавлено в плейлист');
             };
             
+            // ==================== ОЧЕРЕДЬ И ПЛЕЕР ====================
             function setQueue(tracks) {
                 queue = tracks.map((t, i) => ({ ...t, track_id: t.track_id || `track_${i}_${Date.now()}` }));
                 queueIndex = 0;
@@ -830,26 +541,8 @@
                 queue.forEach((track, idx) => {
                     const div = document.createElement('div');
                     div.className = `queue-item ${idx === queueIndex ? 'active' : ''}`;
-                    div.draggable = true;
-                    div.setAttribute('data-index', idx);
-                    div.innerHTML = `<div class="queue-drag-handle">⋮⋮</div><div style="flex:1"><div style="font-weight:500">${escapeHtml(track.title)}</div><div style="font-size:12px;opacity:0.7">${escapeHtml(track.artist)}</div></div>`;
-                    div.onclick = (e) => { if (!e.target.classList.contains('queue-drag-handle')) playTrackByIndex(idx); };
-                    div.ondragstart = (e) => { e.dataTransfer.setData('text/plain', idx); div.classList.add('dragging'); };
-                    div.ondragend = () => div.classList.remove('dragging');
-                    div.ondragover = (e) => e.preventDefault();
-                    div.ondrop = (e) => {
-                        e.preventDefault();
-                        const from = parseInt(e.dataTransfer.getData('text/plain'));
-                        const to = idx;
-                        if (from !== to) {
-                            const [moved] = queue.splice(from, 1);
-                            queue.splice(to, 0, moved);
-                            if (queueIndex === from) queueIndex = to;
-                            else if (queueIndex > from && queueIndex <= to) queueIndex--;
-                            else if (queueIndex < from && queueIndex >= to) queueIndex++;
-                            renderQueue();
-                        }
-                    };
+                    div.innerHTML = `<div style="flex:1"><div style="font-weight:500">${escapeHtml(track.title)}</div><div style="font-size:12px;opacity:0.7">${escapeHtml(track.artist)}</div></div>`;
+                    div.onclick = () => playTrackByIndex(idx);
                     container.appendChild(div);
                 });
             }
@@ -891,11 +584,32 @@
                 }
             }
             
-            function playNext() { if (queueIndex + 1 < queue.length) { queueIndex++; playTrack(queue[queueIndex]); } else showToast('Очередь закончилась'); }
-            function playPrev() { if (queueIndex - 1 >= 0) { queueIndex--; playTrack(queue[queueIndex]); } }
-            function togglePlayPause() { isPlaying ? audio.pause() : audio.play(); }
-            function updatePlayButtons(playing) { document.getElementById('miniPlayPauseBtn').textContent = playing ? '⏸️' : '▶️'; document.getElementById('expandedPlayPauseBtn').textContent = playing ? '⏸️' : '▶️'; }
+            function playNext() { 
+                if (queueIndex + 1 < queue.length) { 
+                    queueIndex++; 
+                    playTrack(queue[queueIndex]); 
+                } else { 
+                    showToast('Очередь закончилась'); 
+                } 
+            }
             
+            function playPrev() { 
+                if (queueIndex - 1 >= 0) { 
+                    queueIndex--; 
+                    playTrack(queue[queueIndex]); 
+                } 
+            }
+            
+            function togglePlayPause() { 
+                isPlaying ? audio.pause() : audio.play(); 
+            }
+            
+            function updatePlayButtons(playing) { 
+                document.getElementById('miniPlayPauseBtn').textContent = playing ? '⏸️' : '▶️'; 
+                document.getElementById('expandedPlayPauseBtn').textContent = playing ? '⏸️' : '▶️'; 
+            }
+            
+            // Аудио события
             audio.onplay = () => { isPlaying = true; updatePlayButtons(true); };
             audio.onpause = () => { isPlaying = false; updatePlayButtons(false); };
             audio.onended = () => playNext();
@@ -914,8 +628,7 @@
                 if (audio.duration) audio.currentTime = percent * audio.duration;
             }
             
-            let longPressTimer = null;
-            
+            // ==================== СОЗДАНИЕ ЭЛЕМЕНТА ТРЕКА ====================
             function createTrackElement(track) {
                 const div = document.createElement('div');
                 div.className = 'track-item';
@@ -924,54 +637,25 @@
                                  <div class="track-info"><div class="track-title">${escapeHtml(track.title)}</div><div class="track-artist">${escapeHtml(track.artist)}</div></div>
                                  <div class="track-duration">${formatTime(track.duration)}</div>`;
                 
+                // Обычное нажатие → сразу играет
                 div.onclick = () => {
-                    if (longPressTimer) clearTimeout(longPressTimer);
-                    addToQueue(track);
-                    if (queue.length === 1) playTrack(track);
+                    setQueue([track]);
+                    playTrack(track);
                 };
-                
-                div.ontouchstart = (e) => {
-                    longPressTimer = setTimeout(() => {
-                        showContextMenu(e, track);
-                        longPressTimer = null;
-                    }, 500);
-                };
-                div.ontouchend = () => { if (longPressTimer) clearTimeout(longPressTimer); };
-                div.ontouchmove = () => { if (longPressTimer) clearTimeout(longPressTimer); };
-                div.oncontextmenu = (e) => showContextMenu(e, track);
                 
                 return div;
             }
             
-            let contextTrack = null;
-            const contextMenuEl = document.getElementById('contextMenu');
-            function hideContextMenu() { contextMenuEl.classList.remove('active'); }
-            function showContextMenu(e, track) {
-                e.preventDefault();
-                contextTrack = track;
-                contextMenuEl.style.left = `${e.clientX}px`;
-                contextMenuEl.style.top = `${e.clientY}px`;
-                contextMenuEl.classList.add('active');
-            }
-            document.addEventListener('click', hideContextMenu);
-            document.querySelectorAll('.context-menu-item').forEach(item => {
-                item.onclick = () => {
-                    if (!contextTrack) return;
-                    const action = item.dataset.action;
-                    if (action === 'play') { setQueue([contextTrack]); playTrack(contextTrack); }
-                    else if (action === 'queue') addToQueue(contextTrack);
-                    else if (action === 'like') { currentTrack = contextTrack; toggleLike(); }
-                    else if (action === 'playlist') { currentTrack = contextTrack; addCurrentToPlaylist(); }
-                    hideContextMenu();
-                };
-            });
-            
+            // ==================== ПОИСК (ускоренный) ====================
             let searchTimeout;
             async function searchTracks(query) {
                 const container = document.getElementById('searchResults');
                 container.innerHTML = '<div class="loading">Поиск...</div>';
                 const tracks = await fetchAPI(`/search?q=${encodeURIComponent(query)}`);
-                if (!tracks || !tracks.length) { container.innerHTML = '<div class="empty-state">Ничего не найдено</div>'; return; }
+                if (!tracks || !tracks.length) { 
+                    container.innerHTML = '<div class="empty-state">Ничего не найдено</div>'; 
+                    return; 
+                }
                 container.innerHTML = '';
                 tracks.forEach(t => container.appendChild(createTrackElement({ ...t, track_id: t.id })));
             }
@@ -979,9 +663,10 @@
             document.getElementById('searchInput').addEventListener('input', (e) => {
                 clearTimeout(searchTimeout);
                 const q = e.target.value.trim();
-                if (q.length >= 2) searchTimeout = setTimeout(() => searchTracks(q), 500);
+                if (q.length >= 2) searchTimeout = setTimeout(() => searchTracks(q), 300);
             });
             
+            // ==================== НАВИГАЦИЯ ====================
             function switchTab(tabId) {
                 currentTab = tabId;
                 document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
@@ -992,6 +677,7 @@
             
             document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
             
+            // ==================== МОДАЛКИ ====================
             window.closePlaylistModal = () => { document.getElementById('playlistModal').classList.remove('active'); document.getElementById('playlistName').value = ''; };
             window.closeAddToPlaylistModal = () => document.getElementById('addToPlaylistModal').classList.remove('active');
             
@@ -1012,6 +698,7 @@
             document.getElementById('closeExpandedBtn').onclick = collapsePlayer;
             document.getElementById('closeExpandedBtn2').onclick = collapsePlayer;
             
+            // ==================== ЗАПУСК ====================
             loadProfile();
             switchTab('search');
         })();
