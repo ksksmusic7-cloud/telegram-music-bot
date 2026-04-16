@@ -189,6 +189,7 @@
         .empty-state, .loading { text-align: center; padding: 60px 20px; opacity: 0.5; }
         .hidden { display: none; }
         
+        /* Toast */
         .toast {
             position: fixed; bottom: 140px; left: 50%; transform: translateX(-50%);
             background: rgba(0,0,0,0.9); color: #fff; padding: 8px 16px;
@@ -584,19 +585,37 @@
                 }
             }
             
+            // ==================== playTrack С ИНДИКАТОРОМ ЗАГРУЗКИ ====================
             async function playTrack(track) {
                 currentTrack = track;
                 updateMiniPlayer();
                 updateLikeButton();
                 
+                // Показываем индикатор загрузки
+                showToast('⏳ Загрузка трека...');
+                
+                // Меняем кнопку play на индикатор (опционально)
+                const miniPlayBtn = document.getElementById('miniPlayPauseBtn');
+                const expPlayBtn = document.getElementById('expandedPlayPauseBtn');
+                const originalMiniText = miniPlayBtn?.textContent;
+                const originalExpText = expPlayBtn?.textContent;
+                if (miniPlayBtn) miniPlayBtn.textContent = '⏳';
+                if (expPlayBtn) expPlayBtn.textContent = '⏳';
+                
                 const data = await fetchAPI(`/download?url=${encodeURIComponent(track.url)}`);
+                
+                // Возвращаем кнопки
+                if (miniPlayBtn) miniPlayBtn.textContent = originalMiniText || '▶️';
+                if (expPlayBtn) expPlayBtn.textContent = originalExpText || '▶️';
+                
                 if (data.url) {
                     audio.src = data.url;
                     audio.play();
                     isPlaying = true;
                     updatePlayButtons(true);
+                    showToast('🎵 Играет');
                 } else {
-                    showToast('Ошибка загрузки');
+                    showToast('❌ Ошибка загрузки');
                 }
             }
             
