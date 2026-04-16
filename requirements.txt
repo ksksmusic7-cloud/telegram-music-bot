@@ -1,2 +1,2 @@
-python-telegram-bot[socks]
+python-telegram-bot
 yt-dlp
