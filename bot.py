@@ -333,7 +333,7 @@ def get_main_keyboard():
         [InlineKeyboardButton("🎵 Популярное", callback_data='popular')],
         [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
         [InlineKeyboardButton("⚙️ Качество", callback_data='quality')],
-        [InlineKeyboardButton("🖥️ Открыть приложение", web_app={"url": "https://telegram-music-bot.onrender.com"})],
+        [InlineKeyboardButton("🖥️ Открыть приложение", web_app={"url": "https://telegram-music-bot-a9vg.onrender.com"})],
         [InlineKeyboardButton("❓ Помощь", callback_data='help')],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -590,7 +590,7 @@ def main():
     application.add_handler(InlineQueryHandler(inline_query))
     
     print("✅ Бот запущен!")
-    print("✨ Mini App доступен по адресу: https://твой-сервер.onrender.com")
+    print("✨ Mini App доступен по адресу: https://telegram-music-bot-a9vg.onrender.com")
     print(f"Админ: @{ADMIN_USERNAME}")
     
     application.run_polling()
