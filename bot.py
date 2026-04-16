@@ -2,12 +2,14 @@ import os
 import sqlite3
 import requests
 import asyncio
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, List
 from collections import deque
 import json
 
 import yt_dlp
+from flask import Flask, send_from_directory
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -18,17 +20,27 @@ from telegram.ext import (
 TOKEN = "8410866218:AAFwRJj2RbRuEAMJayfAYnpAOMMdEKdpA_A"
 ADMIN_USERNAME = "okey2010"
 
-# Очередь запросов (храним для каждого пользователя)
+# Очередь запросов
 user_queues: Dict[int, deque] = {}
 user_processing: Dict[int, bool] = {}
 
-# Доступные качества
+# Качество
 QUALITIES = {
     '128': '128k',
     '192': '192k', 
     '320': '320k'
 }
-user_quality: Dict[int, str] = {}  # качество по умолчанию для пользователя
+
+# Веб-сервер для Mini App
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def serve_index():
+    return send_from_directory('.', 'index.html')
+
+def run_web():
+    port = int(os.environ.get('PORT', 10000))
+    web_app.run(host='0.0.0.0', port=port)
 # ====================
 
 # ===== ПРОВЕРКА АДМИНА =====
@@ -69,9 +81,9 @@ def add_user(chat_id: int, username: str, first_name: str, last_name: str):
     conn = sqlite3.connect('music_bot.db')
     c = conn.cursor()
     c.execute('''INSERT OR REPLACE INTO users 
-                 (chat_id, username, first_name, last_name, registered_at, last_active, total_requests, total_downloads)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-              (chat_id, username, first_name, last_name, datetime.now(), datetime.now(), 0, 0))
+                 (chat_id, username, first_name, last_name, registered_at, last_active, total_requests, total_downloads, quality)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+              (chat_id, username, first_name, last_name, datetime.now(), datetime.now(), 0, 0, '192'))
     conn.commit()
     conn.close()
 
@@ -147,7 +159,6 @@ def get_popular_tracks(limit: int = 5):
     return popular
 
 def get_user_quality(chat_id: int) -> str:
-    """Получает качество для пользователя"""
     conn = sqlite3.connect('music_bot.db')
     c = conn.cursor()
     c.execute("SELECT quality FROM users WHERE chat_id = ?", (chat_id,))
@@ -164,7 +175,6 @@ def set_user_quality(chat_id: int, quality: str):
 
 # ===== ФУНКЦИИ ПОИСКА =====
 async def search_youtube(query: str, quality: str = '192') -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Поиск на YouTube (резервный источник)"""
     filename = f"youtube_{abs(hash(query))}"
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -191,8 +201,7 @@ async def search_youtube(query: str, quality: str = '192') -> Tuple[Optional[str
         print(f"YouTube ошибка: {e}")
     return None, None, None
 
-def get_soundcloud_info(url: str) -> Tuple[Optional[str], Optional[str]]:
-    """Получает название трека и URL обложки со SoundCloud"""
+def get_soundcloud_info(url: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -212,7 +221,6 @@ def get_soundcloud_info(url: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None, None, None
 
 def download_thumbnail(url: str, track_name: str) -> Optional[str]:
-    """Скачивает обложку и возвращает путь к файлу"""
     if not url:
         return None
     
@@ -230,7 +238,6 @@ def download_thumbnail(url: str, track_name: str) -> Optional[str]:
     return None
 
 async def search_soundcloud(query: str, quality: str = '192') -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """Поиск на SoundCloud"""
     filename = f"sc_{abs(hash(query))}"
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -263,42 +270,17 @@ async def search_soundcloud(query: str, quality: str = '192') -> Tuple[Optional[
         print(f"SoundCloud ошибка: {e}")
     return None, None, None, None
 
-async def download_audio_with_queue(chat_id: int, query: str):
-    """Обработка очереди запросов"""
-    # Инициализация очереди для пользователя
-    if chat_id not in user_queues:
-        user_queues[chat_id] = deque()
-        user_processing[chat_id] = False
-    
-    # Добавляем запрос в очередь
-    user_queues[chat_id].append(query)
-    
-    # Если уже обрабатывается - просто добавляем в очередь
-    if user_processing[chat_id]:
-        return
-    
-    # Начинаем обработку очереди
-    user_processing[chat_id] = True
-    while user_queues[chat_id]:
-        next_query = user_queues[chat_id].popleft()
-        await process_search(chat_id, next_query)
-    user_processing[chat_id] = False
-
 async def process_search(chat_id: int, query: str):
-    """Обработка одного поискового запроса"""
     quality = get_user_quality(chat_id)
     
-    # Сначала пробуем SoundCloud
     audio_path, real_title, thumb_path, uploader = await search_soundcloud(query, quality)
     source = "SoundCloud"
     
-    # Если SoundCloud не нашёл - пробуем YouTube
     if not audio_path:
         audio_path, real_title, _ = await search_youtube(query, quality)
         source = "YouTube"
     
     if audio_path and os.path.exists(audio_path):
-        # Отправляем аудио с метаданными
         with open(audio_path, 'rb') as audio_file:
             if thumb_path and os.path.exists(thumb_path):
                 with open(thumb_path, 'rb') as thumb_file:
@@ -329,12 +311,29 @@ async def process_search(chat_id: int, query: str):
         )
         save_search(chat_id, query, "none", success=False)
 
+async def download_audio_with_queue(chat_id: int, query: str):
+    if chat_id not in user_queues:
+        user_queues[chat_id] = deque()
+        user_processing[chat_id] = False
+    
+    user_queues[chat_id].append(query)
+    
+    if user_processing[chat_id]:
+        return
+    
+    user_processing[chat_id] = True
+    while user_queues[chat_id]:
+        next_query = user_queues[chat_id].popleft()
+        await process_search(chat_id, next_query)
+    user_processing[chat_id] = False
+
 # ===== КЛАВИАТУРЫ =====
 def get_main_keyboard():
     keyboard = [
         [InlineKeyboardButton("🎵 Популярное", callback_data='popular')],
         [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
         [InlineKeyboardButton("⚙️ Качество", callback_data='quality')],
+        [InlineKeyboardButton("🖥️ Открыть приложение", web_app={"url": "https://telegram-music-bot.onrender.com"})],
         [InlineKeyboardButton("❓ Помощь", callback_data='help')],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -364,7 +363,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Обложки и метаданные\n"
         "• Очередь запросов\n"
         "• Инлайн-режим (работает в любом чате)\n"
-        "• Выбор качества (128/192/320 kbps)",
+        "• Выбор качества (128/192/320 kbps)\n"
+        "• Веб-приложение (кнопка ниже)",
         reply_markup=get_main_keyboard(),
         parse_mode='Markdown'
     )
@@ -375,6 +375,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 • Просто напиши название песни или исполнителя
 • Используй кнопки для быстрого доступа
+• Нажми "Открыть приложение" для веб-интерфейса
 • Введи @bot_username текст в любом чате (инлайн-режим)
 
 🎵 *Примеры запросов:*
@@ -434,8 +435,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 *Примеры:*
 • Imagine Dragons Believer
-• h.. znaet #сднёмрожденияника
-• анна асти царица
+• Billie Eilish
+• Metallica Nothing Else Matters
         """
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
     
@@ -502,31 +503,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query_text = update.message.text.strip()
     chat_id = update.message.chat_id
     
-    if not query_text:
+    if not query_text or query_text.startswith('/'):
         return
     
     update_activity(chat_id, is_download=False)
     
-    # Проверяем, не команда ли это
-    if query_text.startswith('/'):
-        return
-    
     msg = await update.message.reply_text(f"🔍 Ищу: *{query_text}*\n⏳ Добавлено в очередь...", parse_mode='Markdown')
-    
-    # Добавляем в очередь
     await download_audio_with_queue(chat_id, query_text)
     await msg.delete()
 
-# ===== ИНЛАЙН-РЕЖИМ =====
+async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = update.message.web_app_data
+    if data and data.data:
+        try:
+            payload = json.loads(data.data)
+            if payload.get('action') == 'search':
+                query = payload.get('query')
+                if query:
+                    await download_audio_with_queue(update.effective_chat.id, query)
+        except Exception as e:
+            print(f"WebApp ошибка: {e}")
+
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query_text = update.inline_query.query.strip()
     
     if not query_text:
-        results = []
-        await update.inline_query.answer(results, cache_time=0)
+        await update.inline_query.answer([], cache_time=0)
         return
     
-    # Поиск треков (быстрый, без скачивания)
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -547,14 +551,13 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         duration = entry.get('duration', 0)
                         url = entry.get('webpage_url', '')
                         
-                        # Форматируем длительность
                         duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else "?"
                         
                         result = InlineQueryResultArticle(
                             id=str(i),
                             title=title[:60],
                             description=f"{uploader} • {duration_str}",
-                            input_message_content=InputTextMessageContent(f"!play {url}"),
+                            input_message_content=InputTextMessageContent(url),
                             thumbnail_url=entry.get('thumbnail', '')
                         )
                         results.append(result)
@@ -569,30 +572,25 @@ application = None
 
 def main():
     global application
-    print("🚀 Запуск бота...")
-    print(f"Токен: {TOKEN[:10]}... (скрыто)")
+    print("🚀 Запуск бота и веб-сервера...")
+    
+    # Запускаем веб-сервер в отдельном потоке
+    threading.Thread(target=run_web, daemon=True).start()
     
     init_db()
     
-    # Без прокси
     application = Application.builder().token(TOKEN).build()
     
-    # Команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("stats", stats_command))
-    
-    # Кнопки
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Сообщения
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Инлайн-режим
+    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
     application.add_handler(InlineQueryHandler(inline_query))
     
     print("✅ Бот запущен!")
-    print("✨ Функции: SoundCloud + YouTube | Очередь | Инлайн-режим | Метаданные | Выбор качества")
+    print("✨ Mini App доступен по адресу: https://твой-сервер.onrender.com")
     print(f"Админ: @{ADMIN_USERNAME}")
     
     application.run_polling()
