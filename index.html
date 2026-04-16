@@ -20,10 +20,47 @@
             margin: 0;
         }
         
-        .container {
+        /* Tab Bar */
+        .tab-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+            backdrop-filter: blur(20px);
+            border-top: 0.5px solid var(--tg-theme-hint-color, #e0e0e0);
+            display: flex;
+            padding: 8px 20px 12px 20px;
+            z-index: 100;
+        }
+        
+        .tab {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            background: none;
+            border: none;
+            font-size: 12px;
+            color: var(--tg-theme-hint-color, #8e8e93);
+            cursor: pointer;
+            transition: color 0.2s ease;
+        }
+        
+        .tab.active {
+            color: var(--tg-theme-button-color, #007aff);
+        }
+        
+        .tab-icon {
+            font-size: 22px;
+        }
+        
+        /* Main Content */
+        .main-content {
+            padding: 20px 16px 80px 16px;
             max-width: 600px;
             margin: 0 auto;
-            padding: 20px 16px 100px 16px;
         }
         
         .header {
@@ -42,10 +79,7 @@
             opacity: 0.7;
         }
         
-        .search-container {
-            margin-bottom: 24px;
-        }
-        
+        /* Search */
         .search-box {
             width: 100%;
             padding: 14px 16px;
@@ -54,8 +88,7 @@
             border-radius: 14px;
             background: var(--tg-theme-secondary-bg-color, #f8f8f8);
             color: var(--tg-theme-text-color, #000000);
-            box-sizing: border-box;
-            transition: all 0.2s ease;
+            margin-bottom: 20px;
         }
         
         .search-box:focus {
@@ -63,6 +96,7 @@
             border-color: var(--tg-theme-button-color, #007aff);
         }
         
+        /* Track List */
         .track-list {
             display: flex;
             flex-direction: column;
@@ -77,17 +111,16 @@
             background: var(--tg-theme-secondary-bg-color, #f8f8f8);
             border-radius: 16px;
             cursor: pointer;
-            transition: transform 0.15s ease, background 0.2s ease;
+            transition: transform 0.15s ease;
         }
         
         .track-item:active {
             transform: scale(0.98);
-            background: var(--tg-theme-hint-color, #e0e0e0);
         }
         
         .track-cover {
-            width: 56px;
-            height: 56px;
+            width: 52px;
+            height: 52px;
             border-radius: 12px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             display: flex;
@@ -118,10 +151,90 @@
             text-overflow: ellipsis;
         }
         
+        .track-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        
+        .like-btn {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 8px;
+            transition: transform 0.1s ease;
+        }
+        
+        .like-btn:active {
+            transform: scale(0.9);
+        }
+        
         .track-duration {
             font-size: 13px;
             opacity: 0.5;
-            flex-shrink: 0;
+            min-width: 40px;
+            text-align: right;
+        }
+        
+        /* Profile Section */
+        .profile-section {
+            text-align: center;
+        }
+        
+        .avatar {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0 auto 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+        }
+        
+        .profile-name {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .profile-username {
+            font-size: 15px;
+            opacity: 0.7;
+            margin-bottom: 24px;
+        }
+        
+        .stats-row {
+            display: flex;
+            justify-content: space-around;
+            padding: 20px;
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+            border-radius: 20px;
+            margin-bottom: 24px;
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 22px;
+            font-weight: 700;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            opacity: 0.7;
+            margin-top: 4px;
+        }
+        
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            opacity: 0.5;
         }
         
         .loading {
@@ -130,9 +243,10 @@
             opacity: 0.7;
         }
         
+        /* Player */
         .player {
             position: fixed;
-            bottom: 0;
+            bottom: 70px;
             left: 0;
             right: 0;
             background: var(--tg-theme-secondary-bg-color, #f8f8f8);
@@ -141,7 +255,7 @@
             padding: 12px 16px;
             transform: translateY(100%);
             transition: transform 0.3s ease;
-            z-index: 100;
+            z-index: 99;
         }
         
         .player.active {
@@ -162,35 +276,61 @@
             border-radius: 12px;
         }
         
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            opacity: 0.5;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 0.5; }
-            50% { opacity: 1; }
-        }
-        
-        .loading-dots {
-            animation: pulse 1.5s ease-in-out infinite;
+        .hidden {
+            display: none;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>Music Bot</h1>
-            <p>Найди и слушай любую музыку</p>
-        </div>
-        
-        <div class="search-container">
+    <div class="tab-bar">
+        <button class="tab" data-tab="search">
+            <div class="tab-icon">🔍</div>
+            <span>Поиск</span>
+        </button>
+        <button class="tab" data-tab="library">
+            <div class="tab-icon">📚</div>
+            <span>Моя музыка</span>
+        </button>
+        <button class="tab" data-tab="profile">
+            <div class="tab-icon">👤</div>
+            <span>Профиль</span>
+        </button>
+    </div>
+    
+    <div class="main-content">
+        <!-- Поиск -->
+        <div id="search-tab">
+            <div class="header">
+                <h1>Music Bot</h1>
+                <p>Найди и слушай любую музыку</p>
+            </div>
             <input type="text" class="search-box" id="searchInput" placeholder="Поиск песен, исполнителей..." autofocus>
+            <div class="track-list" id="searchResults"></div>
         </div>
         
-        <div class="track-list" id="trackList">
-            <div class="empty-state">Введите запрос для поиска</div>
+        <!-- Библиотека -->
+        <div id="library-tab" class="hidden">
+            <div class="header">
+                <h1>Моя музыка</h1>
+                <p>Любимые треки</p>
+            </div>
+            <div class="track-list" id="libraryList"></div>
+        </div>
+        
+        <!-- Профиль -->
+        <div id="profile-tab" class="hidden">
+            <div class="profile-section">
+                <div class="avatar" id="avatar">🎵</div>
+                <div class="profile-name" id="displayName"></div>
+                <div class="profile-username" id="username"></div>
+                
+                <div class="stats-row">
+                    <div class="stat-item">
+                        <div class="stat-value" id="likesCount">0</div>
+                        <div class="stat-label">Лайков</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     
@@ -204,46 +344,154 @@
         tg.ready();
         tg.expand();
         
-        let searchTimeout;
+        const telegramId = tg.initDataUnsafe?.user?.id;
+        const telegramUsername = tg.initDataUnsafe?.user?.username || '';
+        const telegramFirstName = tg.initDataUnsafe?.user?.first_name || '';
+        
+        let currentTab = 'search';
         let currentAudio = null;
         let currentUrl = null;
+        let likedTracks = new Map();
         
-        function sendSearch(query) {
-            tg.sendData(JSON.stringify({ action: 'search', query: query }));
-            tg.close();
+        // Инициализация профиля
+        async function initProfile() {
+            if (!telegramId) return;
+            
+            const response = await fetch(`/api/profile/${telegramId}`);
+            const profile = await response.json();
+            
+            if (!profile.exists) {
+                await fetch(`/api/profile/${telegramId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: telegramUsername,
+                        display_name: telegramFirstName,
+                        avatar_url: ''
+                    })
+                });
+            }
+            
+            document.getElementById('displayName').textContent = profile.display_name || telegramFirstName;
+            document.getElementById('username').textContent = `@${telegramUsername || 'user'}`;
+            
+            await loadLikes();
+        }
+        
+        // Загрузка лайков
+        async function loadLikes() {
+            if (!telegramId) return;
+            
+            const response = await fetch(`/api/likes/${telegramId}`);
+            const likes = await response.json();
+            
+            likedTracks.clear();
+            likes.forEach(like => {
+                likedTracks.set(like.track_id, like);
+            });
+            
+            document.getElementById('likesCount').textContent = likes.length;
+            
+            // Обновляем библиотеку
+            const libraryList = document.getElementById('libraryList');
+            if (likes.length === 0) {
+                libraryList.innerHTML = '<div class="empty-state">Нет сохранённых треков<br>❤️ Лайкайте музыку, чтобы она появилась здесь</div>';
+            } else {
+                libraryList.innerHTML = '';
+                likes.forEach(like => {
+                    libraryList.appendChild(createTrackElement(like, true));
+                });
+            }
+        }
+        
+        // Создание элемента трека
+        function createTrackElement(track, isLiked = false) {
+            const div = document.createElement('div');
+            div.className = 'track-item';
+            div.innerHTML = `
+                <div class="track-cover">🎵</div>
+                <div class="track-info">
+                    <div class="track-title">${escapeHtml(track.title)}</div>
+                    <div class="track-artist">${escapeHtml(track.artist)}</div>
+                </div>
+                <div class="track-actions">
+                    <button class="like-btn" data-id="${track.track_id || track.id}" data-liked="${isLiked}">
+                        ${isLiked ? '❤️' : '🤍'}
+                    </button>
+                    <div class="track-duration">${formatDuration(track.duration)}</div>
+                </div>
+            `;
+            
+            div.onclick = (e) => {
+                if (e.target.classList.contains('like-btn')) return;
+                playTrack(track.url, track.title);
+            };
+            
+            const likeBtn = div.querySelector('.like-btn');
+            likeBtn.onclick = async (e) => {
+                e.stopPropagation();
+                const trackId = likeBtn.dataset.id;
+                const isCurrentlyLiked = likeBtn.dataset.liked === 'true';
+                
+                if (isCurrentlyLiked) {
+                    await fetch(`/api/likes/${telegramId}?track_id=${trackId}`, { method: 'DELETE' });
+                    likeBtn.innerHTML = '🤍';
+                    likeBtn.dataset.liked = 'false';
+                } else {
+                    await fetch(`/api/likes/${telegramId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            track_id: trackId,
+                            title: track.title,
+                            artist: track.artist,
+                            url: track.url,
+                            thumbnail: track.thumbnail
+                        })
+                    });
+                    likeBtn.innerHTML = '❤️';
+                    likeBtn.dataset.liked = 'true';
+                }
+                await loadLikes();
+                if (currentTab === 'search' && searchResults) {
+                    refreshSearchResults();
+                }
+            };
+            
+            return div;
         }
         
         async function searchTracks(query) {
-            const trackList = document.getElementById('trackList');
-            trackList.innerHTML = '<div class="loading"><span class="loading-dots">Поиск</span></div>';
+            const searchResults = document.getElementById('searchResults');
+            searchResults.innerHTML = '<div class="loading">Поиск...</div>';
             
             try {
                 const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
                 const tracks = await response.json();
                 
                 if (!tracks || tracks.length === 0) {
-                    trackList.innerHTML = '<div class="empty-state">Ничего не найдено<br>Попробуйте другой запрос</div>';
+                    searchResults.innerHTML = '<div class="empty-state">Ничего не найдено</div>';
                     return;
                 }
                 
-                trackList.innerHTML = '';
+                searchResults.innerHTML = '';
                 tracks.forEach(track => {
-                    const trackEl = document.createElement('div');
-                    trackEl.className = 'track-item';
-                    trackEl.innerHTML = `
-                        <div class="track-cover">🎵</div>
-                        <div class="track-info">
-                            <div class="track-title">${escapeHtml(track.title)}</div>
-                            <div class="track-artist">${escapeHtml(track.artist)}</div>
-                        </div>
-                        <div class="track-duration">${formatDuration(track.duration)}</div>
-                    `;
-                    trackEl.onclick = () => playTrack(track.url, track.title);
-                    trackList.appendChild(trackEl);
+                    const isLiked = likedTracks.has(track.id);
+                    searchResults.appendChild(createTrackElement({
+                        ...track,
+                        track_id: track.id
+                    }, isLiked));
                 });
             } catch (e) {
                 console.error(e);
-                trackList.innerHTML = '<div class="empty-state">Ошибка поиска<br>Попробуйте позже</div>';
+                searchResults.innerHTML = '<div class="empty-state">Ошибка поиска</div>';
+            }
+        }
+        
+        async function refreshSearchResults() {
+            const query = document.getElementById('searchInput').value;
+            if (query.length >= 2) {
+                await searchTracks(query);
             }
         }
         
@@ -252,10 +500,7 @@
             const audio = document.getElementById('audio');
             const playerTitle = document.getElementById('playerTitle');
             
-            // Если уже играет этот же трек, ничего не делаем
-            if (currentUrl === url && !audio.paused) {
-                return;
-            }
+            if (currentUrl === url && !audio.paused) return;
             
             playerTitle.textContent = title;
             player.classList.add('active');
@@ -269,10 +514,10 @@
                     audio.src = data.url;
                     audio.play();
                 } else {
-                    playerTitle.textContent = 'Ошибка загрузки трека';
+                    playerTitle.textContent = 'Ошибка загрузки';
                 }
             } catch (e) {
-                playerTitle.textContent = 'Ошибка загрузки трека';
+                playerTitle.textContent = 'Ошибка загрузки';
             }
         }
         
@@ -289,18 +534,44 @@
             return div.innerHTML;
         }
         
+        // Tab переключение
+        function switchTab(tabId) {
+            currentTab = tabId;
+            
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelector(`.tab[data-tab="${tabId}"]`).classList.add('active');
+            
+            document.getElementById('search-tab').classList.add('hidden');
+            document.getElementById('library-tab').classList.add('hidden');
+            document.getElementById('profile-tab').classList.add('hidden');
+            
+            document.getElementById(`${tabId}-tab`).classList.remove('hidden');
+            
+            if (tabId === 'library') {
+                loadLikes();
+            }
+        }
+        
+        // Event listeners
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+        });
+        
+        let searchTimeout;
         const searchInput = document.getElementById('searchInput');
         searchInput.addEventListener('input', (e) => {
             clearTimeout(searchTimeout);
             const query = e.target.value.trim();
             if (query.length >= 2) {
                 searchTimeout = setTimeout(() => searchTracks(query), 500);
-            } else if (query.length === 0) {
-                document.getElementById('trackList').innerHTML = '<div class="empty-state">Введите запрос для поиска</div>';
             }
         });
         
-        searchInput.focus();
+        // Запуск
+        initProfile();
+        switchTab('search');
     </script>
 </body>
 </html>
