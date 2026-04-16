@@ -15,7 +15,7 @@ from telegram.request import HTTPXRequest
 TOKEN = "8410866218:AAFwRJj2RbRuEAMJayfAYnpAOMMdEKdpA_A"
 # =========================================
 
-PROXY_URL = "socks5://185.217.198.141:1080"
+PROXY_URL = "http://45.90.98.26:8080"  # HTTP прокси
 ADMIN_USERNAME = "okey2010"
 
 # ===== ПРОВЕРКА АДМИНА =====
