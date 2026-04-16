@@ -38,7 +38,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Основная таблица пользователей (расширенная)
+    # Основная таблица пользователей
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         chat_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -148,15 +148,15 @@ def init_db():
         UNIQUE(chat_id, date)
     )''')
     
-    # Индексы для скорости
+    # Индексы
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_users_referral ON users(referral_code)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_users_last_ip ON users(last_ip)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_likes_telegram_id ON user_likes(telegram_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_playlists_telegram_id ON playlists(telegram_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_actions_chat_id ON user_actions(chat_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_actions_created_at ON user_actions(created_at)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON user_daily_stats(date)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON user_sessions(chat_id)')
     
     conn.commit()
     conn.close()
@@ -173,12 +173,10 @@ def execute_query(query, params=(), fetch_one=False, fetch_all=False):
         return c.lastrowid if query.strip().upper().startswith('INSERT') else None
 
 def log_action(chat_id: int, action_type: str, action_data: dict = None):
-    """Логирует действие пользователя"""
     execute_query("INSERT INTO user_actions (chat_id, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
-                  (chat_id, action_type, json.dumps(action_data) if action_data else None, datetime.now()))
+                  (chat_id, action_type, json.dumps(action_data, ensure_ascii=False) if action_data else None, datetime.now()))
 
 def update_daily_stats(chat_id: int, searches=0, downloads=0, likes=0, listening=0):
-    """Обновляет ежедневную статистику"""
     today = datetime.now().date()
     execute_query('''INSERT INTO user_daily_stats (chat_id, date, searches, downloads, likes_added, listening_time)
                      VALUES (?, ?, ?, ?, ?, ?)
@@ -187,72 +185,83 @@ def update_daily_stats(chat_id: int, searches=0, downloads=0, likes=0, listening
                      likes_added = likes_added + ?, listening_time = listening_time + ?''',
                   (chat_id, today, searches, downloads, likes, listening, searches, downloads, likes, listening))
 
-def get_device_info(update: Update) -> dict:
-    """Извлекает информацию об устройстве пользователя"""
-    user = update.effective_user
-    return {
-        'language_code': user.language_code,
-        'is_premium': user.is_premium,
-        'is_bot': user.is_bot,
-        'first_name': user.first_name,
-        'last_name': user.last_name,
-        'username': user.username
-    }
-
-def add_user_full(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Добавляет пользователя с максимальным количеством данных"""
-    user = update.effective_user
-    chat = update.effective_chat
-    
-    # Генерируем реферальный код
-    referral_code = hashlib.md5(f"{user.id}_{datetime.now()}".encode()).hexdigest()[:8]
-    
-    # Извлекаем информацию из контекста (если есть)
-    user_agent = None
-    ip_address = None
-    if context.bot.defaults:
-        user_agent = getattr(context.bot.defaults, 'user_agent', None)
-    
+def add_user_full(chat_id: int, username: str, first_name: str, last_name: str, language_code: str = None, is_premium: bool = False):
+    referral_code = hashlib.md5(f"{chat_id}_{datetime.now()}".encode()).hexdigest()[:8]
     execute_query('''INSERT OR IGNORE INTO users 
-        (chat_id, username, first_name, last_name, language_code, is_premium, is_bot,
-         registered_at, last_active, total_requests, total_downloads, quality, referral_code)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)''',
-        (user.id, user.username or "", user.first_name or "", user.last_name or "",
-         user.language_code, 1 if user.is_premium else 0, 0,
-         datetime.now(), datetime.now(), DEFAULT_QUALITY, referral_code))
+        (chat_id, username, first_name, last_name, language_code, is_premium, registered_at, last_active, quality, referral_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        (chat_id, username or "", first_name or "", last_name or "",
+         language_code, 1 if is_premium else 0, datetime.now(), datetime.now(), DEFAULT_QUALITY, referral_code))
     
-    # Обновляем существующего пользователя
+    # Обновляем существующего
     execute_query('''UPDATE users SET 
-        last_active = ?, username = ?, first_name = ?, last_name = ?,
-        language_code = ?, is_premium = ?
+        last_active = ?, username = ?, first_name = ?, last_name = ?, language_code = ?, is_premium = ?
         WHERE chat_id = ?''',
-        (datetime.now(), user.username or "", user.first_name or "", user.last_name or "",
-         user.language_code, 1 if user.is_premium else 0, user.id))
-    
-    log_action(user.id, 'start', get_device_info(update))
-    return referral_code
+        (datetime.now(), username or "", first_name or "", last_name or "", language_code, 1 if is_premium else 0, chat_id))
 
 def update_user_stats(chat_id: int, field: str, increment: int = 1):
-    """Увеличивает счётчик пользователя"""
     execute_query(f"UPDATE users SET {field} = {field} + ?, last_active = ? WHERE chat_id = ?",
                   (increment, datetime.now(), chat_id))
 
+def update_user_ip(chat_id: int, ip: str, user_agent: str = None, device_type: str = None, os_name: str = None):
+    """Обновляет IP и информацию об устройстве пользователя"""
+    if user_agent:
+        execute_query("UPDATE users SET last_ip = ?, user_agent = ?, device_type = ?, os_name = ? WHERE chat_id = ?",
+                      (ip, user_agent[:500], device_type or 'unknown', os_name or 'unknown', chat_id))
+    else:
+        execute_query("UPDATE users SET last_ip = ? WHERE chat_id = ?", (ip, chat_id))
+    log_action(chat_id, 'ip_update', {'ip': ip, 'user_agent': user_agent[:200] if user_agent else None})
+
 def get_user_full_info(chat_id: int) -> dict:
-    """Получает полную информацию о пользователе"""
     user = execute_query('''SELECT * FROM users WHERE chat_id = ?''', (chat_id,), fetch_one=True)
     if not user:
         return {}
-    
     columns = ['chat_id', 'username', 'first_name', 'last_name', 'language_code', 'is_premium', 'is_bot',
                'phone_number', 'bio', 'registered_at', 'last_active', 'last_ip', 'user_agent',
                'device_type', 'os_name', 'os_version', 'app_version', 'total_requests', 'total_downloads',
                'total_likes', 'total_playlists', 'total_listening_time', 'quality', 'referral_code',
                'referred_by', 'is_blocked', 'block_reason', 'notes']
-    
     return {columns[i]: user[i] for i in range(len(columns))}
 
 # ==================== ВЕБ-СЕРВЕР ====================
 web_app = Flask(__name__)
+
+# ==================== IP ЛОГИРОВАНИЕ ПРИ ОТКРЫТИИ MINI APP ====================
+@web_app.route('/api/ip_log', methods=['POST'])
+def log_ip():
+    """Сохраняет IP и информацию об устройстве, когда пользователь открывает Mini App"""
+    data = request.json
+    telegram_id = data.get('telegram_id')
+    
+    if not telegram_id:
+        return jsonify({'error': 'No telegram_id'}), 400
+    
+    # Получаем реальный IP (с учетом прокси)
+    ip = request.remote_addr
+    if request.headers.get('X-Forwarded-For'):
+        ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    elif request.headers.get('X-Real-IP'):
+        ip = request.headers.get('X-Real-IP')
+    
+    # Если IP передан с клиента (через api.ipify.org)
+    if data.get('ip') and data.get('ip') != 'unknown':
+        ip = data.get('ip')
+    
+    user_agent = data.get('user_agent') or request.headers.get('User-Agent', '')
+    device_type = data.get('device_type', 'unknown')
+    os_name = data.get('os_name', 'unknown')
+    
+    # Сохраняем в БД
+    update_user_ip(telegram_id, ip, user_agent, device_type, os_name)
+    
+    # Сохраняем сессию
+    session_id = data.get('session_id', hashlib.md5(f"{telegram_id}_{datetime.now()}".encode()).hexdigest()[:16])
+    execute_query('''INSERT INTO user_sessions (chat_id, session_id, login_time, ip_address, device_info)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (telegram_id, session_id, datetime.now(), ip, user_agent[:200]))
+    
+    print(f"📡 IP сохранён: {telegram_id} -> {ip} [{device_type}/{os_name}]")
+    return jsonify({'success': True, 'ip': ip})
 
 @web_app.route('/')
 def serve_index():
@@ -272,15 +281,14 @@ def api_profile(telegram_id):
         'telegram_id': telegram_id,
         'username': user.get('username'),
         'display_name': user.get('first_name'),
+        'last_ip': user.get('last_ip'),
+        'device_type': user.get('device_type'),
         'registered_at': user.get('registered_at'),
         'last_active': user.get('last_active'),
         'total_requests': user.get('total_requests'),
         'total_downloads': user.get('total_downloads'),
         'quality': user.get('quality'),
-        'stats': {
-            'likes': likes_count,
-            'playlists': playlists_count
-        }
+        'stats': {'likes': likes_count, 'playlists': playlists_count}
     })
 
 @web_app.route('/api/likes/<int:telegram_id>', methods=['GET', 'POST', 'DELETE'])
@@ -364,15 +372,12 @@ def api_playlist_tracks(playlist_id):
 
 @web_app.route('/api/stats/<int:telegram_id>')
 def api_user_stats(telegram_id):
-    """Возвращает подробную статистику пользователя"""
-    # Последние 7 дней
     week_ago = datetime.now() - timedelta(days=7)
     daily = execute_query('''SELECT date, searches, downloads, likes_added, listening_time
                              FROM user_daily_stats 
                              WHERE chat_id = ? AND date > ? 
                              ORDER BY date DESC''', (telegram_id, week_ago.date()), fetch_all=True) or []
     
-    # Последние действия
     actions = execute_query('''SELECT action_type, action_data, created_at
                                FROM user_actions 
                                WHERE chat_id = ? 
@@ -429,16 +434,16 @@ def api_download():
 
 @web_app.route('/api/top_users')
 def api_top_users():
-    """Топ пользователей по активности (только для админа)"""
     admin_key = request.headers.get('X-Admin-Key', '')
     if admin_key != hashlib.md5(ADMIN_USERNAME.encode()).hexdigest():
         return jsonify({'error': 'Unauthorized'}), 401
     
-    top = execute_query('''SELECT chat_id, username, first_name, total_requests, total_downloads, total_likes
+    top = execute_query('''SELECT chat_id, username, first_name, total_requests, total_downloads, total_likes, last_ip, device_type
                            FROM users ORDER BY total_requests DESC LIMIT 20''', fetch_all=True) or []
     return jsonify([{
         'chat_id': t[0], 'username': t[1], 'name': t[2],
-        'requests': t[3], 'downloads': t[4], 'likes': t[5]
+        'requests': t[3], 'downloads': t[4], 'likes': t[5],
+        'last_ip': t[6], 'device': t[7]
     } for t in top])
 
 # ==================== ТЕЛЕГРАМ КОМАНДЫ ====================
@@ -450,24 +455,26 @@ async def is_admin(update: Update) -> bool:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    referral_code = add_user_full(update, context)
+    add_user_full(user.id, user.username or "", user.first_name or "", user.last_name or "",
+                  user.language_code, user.is_premium)
     
     await update.message.reply_text(
         f"🎵 Привет, {user.first_name}!\n\n"
-        f"Твой реферальный код: `{referral_code}`\n\n"
-        "Я музыкальный бот. Просто напиши название песни или исполнителя.\n\n"
+        "Я музыкальный бот.\n\n"
         "✨ *Возможности:*\n"
         "• Поиск на SoundCloud\n"
         "• Лайки и плейлисты\n"
-        "• Веб-приложение\n"
-        "• Статистика активности",
-        parse_mode='Markdown'
+        "• Веб-приложение (открывается по кнопке ниже)\n\n"
+        "🔗 *Открой Mini App* для полного функционала!",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎵 Открыть приложение", web_app={"url": APP_URL})
+        ]])
     )
     update_user_stats(user.id, 'total_requests')
     log_action(user.id, 'start')
 
 async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать информацию о себе"""
     user_id = update.effective_user.id
     user_info = get_user_full_info(user_id)
     
@@ -485,6 +492,8 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔖 *Username:* @{user_info.get('username', 'нет')}
 🌐 *Язык:* {user_info.get('language_code', '?')}
 💎 *Premium:* {'Да' if user_info.get('is_premium') else 'Нет'}
+🌍 *Последний IP:* `{user_info.get('last_ip', 'неизвестен')}`
+📱 *Устройство:* {user_info.get('device_type', '?')} / {user_info.get('os_name', '?')}
 
 📈 *Активность:*
 • Запросов: {user_info.get('total_requests', 0)}
@@ -492,10 +501,8 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Лайков: {likes_count}
 • Плейлистов: {playlists_count}
 
-🔑 *Реферальный код:* `{user_info.get('referral_code', 'нет')}`
-
-📅 *В боте с:* {user_info.get('registered_at', '?')[:16]}
-🕐 *Последний визит:* {user_info.get('last_active', '?')[:16]}
+📅 *В боте с:* {user_info.get('registered_at', '?')[:16] if user_info.get('registered_at') else '?'}
+🕐 *Последний визит:* {user_info.get('last_active', '?')[:16] if user_info.get('last_active') else '?'}
 
 ⚙️ *Качество:* {user_info.get('quality', '192')} kbps
     """
@@ -512,18 +519,19 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_likes = execute_query("SELECT COUNT(*) FROM user_likes", fetch_one=True)[0]
     total_playlists = execute_query("SELECT COUNT(*) FROM playlists", fetch_one=True)[0]
     
-    # Активные за сегодня
     today = datetime.now().date()
     active_today = execute_query("SELECT COUNT(DISTINCT chat_id) FROM user_daily_stats WHERE date = ?", (today,), fetch_one=True)[0]
-    
-    # Премиум пользователи
     premium_users = execute_query("SELECT COUNT(*) FROM users WHERE is_premium = 1", fetch_one=True)[0]
+    
+    # Статистика по IP (уникальные)
+    unique_ips = execute_query("SELECT COUNT(DISTINCT last_ip) FROM users WHERE last_ip IS NOT NULL AND last_ip != ''", fetch_one=True)[0]
     
     await update.message.reply_text(
         f"📊 *Общая статистика*\n\n"
         f"👥 *Всего пользователей:* {total_users}\n"
         f"💎 *Premium:* {premium_users}\n"
-        f"📈 *Активных сегодня:* {active_today}\n\n"
+        f"📈 *Активных сегодня:* {active_today}\n"
+        f"🌍 *Уникальных IP:* {unique_ips}\n\n"
         f"🔍 *Поисков:* {total_requests}\n"
         f"🎵 *Скачиваний:* {total_downloads}\n"
         f"❤️ *Лайков:* {total_likes}\n"
@@ -560,7 +568,7 @@ def run_web():
     web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False, use_reloader=False)
 
 def main():
-    print("🚀 Запуск бота с расширенной БД...")
+    print("🚀 Запуск бота с IP-логированием...")
     threading.Thread(target=run_web, daemon=True).start()
     init_db()
     
@@ -573,7 +581,7 @@ def main():
     
     print("✅ Бот запущен!")
     print(f"Админ: @{ADMIN_USERNAME}")
-    print("Добавлены команды: /me — статистика пользователя")
+    print("📡 IP-логирование: при открытии Mini App")
     app.run_polling()
 
 if __name__ == "__main__":
