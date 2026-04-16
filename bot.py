@@ -53,7 +53,7 @@ def init_db():
         registered_at TIMESTAMP,
         last_active TIMESTAMP,
         
-        -- Геолокация
+        -- Геолокация (по IP/VPN)
         last_ip TEXT,
         country TEXT,
         city TEXT,
@@ -61,6 +61,18 @@ def init_db():
         timezone TEXT,
         latitude REAL,
         longitude REAL,
+        
+        -- VPN/Прокси
+        is_vpn BOOLEAN DEFAULT 0,
+        vpn_provider TEXT,
+        is_proxy BOOLEAN DEFAULT 0,
+        is_hosting BOOLEAN DEFAULT 0,
+        
+        -- GPS (реальная геолокация)
+        gps_latitude REAL,
+        gps_longitude REAL,
+        gps_accuracy INTEGER,
+        gps_provided_at TIMESTAMP,
         
         -- Технические данные
         user_agent TEXT,
@@ -149,7 +161,8 @@ def init_db():
         ip_address TEXT,
         device_info TEXT,
         location_city TEXT,
-        location_country TEXT
+        location_country TEXT,
+        is_vpn BOOLEAN DEFAULT 0
     )''')
     
     # Действия пользователей
@@ -164,6 +177,7 @@ def init_db():
     # Индексы
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_country ON users(country)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_users_is_vpn ON users(is_vpn)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_device ON users(device_type)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_likes_telegram_id ON user_likes(telegram_id)')
@@ -207,11 +221,54 @@ def add_user_full(chat_id: int, username: str, first_name: str, last_name: str, 
         WHERE chat_id = ?''',
         (datetime.now(), username or "", first_name or "", last_name or "", language_code, 1 if is_premium else 0, chat_id))
 
+def check_vpn(ip: str) -> Tuple[bool, str, bool, bool]:
+    """Проверяет IP на принадлежность к VPN/прокси/хостингу"""
+    is_vpn = False
+    vpn_provider = None
+    is_proxy = False
+    is_hosting = False
+    
+    try:
+        # Используем ip-api.com (бесплатно, 45 запросов/мин)
+        resp = http_requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            is_proxy = data.get('proxy', False)
+            is_hosting = data.get('hosting', False)
+            is_vpn = is_proxy or is_hosting
+            if is_vpn:
+                vpn_provider = data.get('isp', 'Unknown VPN')
+    except:
+        pass
+    
+    # Дополнительная проверка через vpnapi.io (если есть ключ)
+    # API_KEY = os.environ.get('VPNAPI_KEY', '')
+    # if API_KEY:
+    #     try:
+    #         resp = http_requests.get(f'https://vpnapi.io/api/{ip}?key={API_KEY}', timeout=3)
+    #         if resp.status_code == 200:
+    #             data = resp.json()
+    #             is_vpn = data.get('security', {}).get('vpn', False)
+    #             vpn_provider = data.get('security', {}).get('vpn_name', vpn_provider)
+    #     except:
+    #         pass
+    
+    return is_vpn, vpn_provider, is_proxy, is_hosting
+
 def update_user_geo(chat_id: int, ip: str, country: str, city: str, region: str, timezone: str, lat: float, lon: float):
+    # Проверяем VPN
+    is_vpn, vpn_provider, is_proxy, is_hosting = check_vpn(ip)
+    
     execute_query('''UPDATE users SET 
-                     last_ip = ?, country = ?, city = ?, region = ?, timezone = ?, latitude = ?, longitude = ?
+                     last_ip = ?, country = ?, city = ?, region = ?, timezone = ?, 
+                     latitude = ?, longitude = ?, is_vpn = ?, vpn_provider = ?,
+                     is_proxy = ?, is_hosting = ?
                      WHERE chat_id = ?''',
-                  (ip, country, city, region, timezone, lat, lon, chat_id))
+                  (ip, country, city, region, timezone, lat, lon, 
+                   1 if is_vpn else 0, vpn_provider,
+                   1 if is_proxy else 0, 1 if is_hosting else 0, chat_id))
+    
+    return is_vpn, vpn_provider
 
 def update_user_device(chat_id: int, data: dict):
     execute_query('''UPDATE users SET 
@@ -230,13 +287,21 @@ def update_user_device(chat_id: int, data: dict):
                    data.get('battery_level'), 1 if data.get('is_charging') else 0, 1 if data.get('power_save_mode') else 0,
                    chat_id))
 
+def update_user_gps(chat_id: int, lat: float, lon: float, accuracy: int):
+    execute_query('''UPDATE users SET 
+                     gps_latitude = ?, gps_longitude = ?, gps_accuracy = ?, gps_provided_at = ?
+                     WHERE chat_id = ?''',
+                  (lat, lon, accuracy, datetime.now(), chat_id))
+
 def get_user_full_info(chat_id: int) -> dict:
     user = execute_query('''SELECT * FROM users WHERE chat_id = ?''', (chat_id,), fetch_one=True)
     if not user:
         return {}
     columns = ['chat_id', 'username', 'first_name', 'last_name', 'language_code', 'is_premium', 'is_bot',
                'phone_number', 'bio', 'registered_at', 'last_active', 'last_ip', 'country', 'city', 'region',
-               'timezone', 'latitude', 'longitude', 'user_agent', 'device_type', 'device_brand', 'device_model',
+               'timezone', 'latitude', 'longitude', 'is_vpn', 'vpn_provider', 'is_proxy', 'is_hosting',
+               'gps_latitude', 'gps_longitude', 'gps_accuracy', 'gps_provided_at',
+               'user_agent', 'device_type', 'device_brand', 'device_model',
                'os_name', 'os_version', 'app_version', 'browser_name', 'browser_version', 'screen_width',
                'screen_height', 'screen_color_depth', 'device_pixel_ratio', 'hardware_concurrency',
                'max_touch_points', 'touch_support', 'network_type', 'network_downlink', 'network_rtt',
@@ -265,9 +330,11 @@ def collect_data():
     elif request.headers.get('X-Real-IP'):
         ip = request.headers.get('X-Real-IP')
     
-    # Геолокация по IP
+    # Геолокация по IP (с проверкой VPN)
     country = city = region = timezone = None
     lat = lon = None
+    is_vpn = False
+    vpn_provider = None
     
     try:
         geo_resp = http_requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
@@ -280,10 +347,12 @@ def collect_data():
                 timezone = geo.get('timezone')
                 lat = geo.get('lat')
                 lon = geo.get('lon')
+                is_vpn = geo.get('proxy', False) or geo.get('hosting', False)
+                vpn_provider = geo.get('isp', 'Unknown VPN') if is_vpn else None
     except:
         pass
     
-    # Сохраняем геоданные
+    # Сохраняем геоданные (с флагом VPN)
     update_user_geo(telegram_id, ip, country, city, region, timezone, lat, lon)
     
     # Сохраняем технические данные
@@ -291,14 +360,36 @@ def collect_data():
     
     # Сохраняем сессию
     session_id = data.get('session_id', hashlib.md5(f"{telegram_id}_{datetime.now()}".encode()).hexdigest()[:16])
-    execute_query('''INSERT INTO user_sessions (chat_id, session_id, login_time, ip_address, device_info, location_city, location_country)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                  (telegram_id, session_id, datetime.now(), ip, json.dumps(data.get('device', {})), city, country))
+    execute_query('''INSERT INTO user_sessions (chat_id, session_id, login_time, ip_address, device_info, location_city, location_country, is_vpn)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (telegram_id, session_id, datetime.now(), ip, json.dumps(data.get('device', {})), city, country, 1 if is_vpn else 0))
     
-    log_action(telegram_id, 'device_data_collected', {'ip': ip, 'country': country, 'device': data.get('device', {}).get('device_type')})
+    log_action(telegram_id, 'device_data_collected', {
+        'ip': ip, 
+        'country': country, 
+        'is_vpn': is_vpn,
+        'vpn_provider': vpn_provider,
+        'device': data.get('device', {}).get('device_type')
+    })
     
-    print(f"📊 Данные собраны: {telegram_id} | {country} | {data.get('device', {}).get('device_type')}")
-    return jsonify({'success': True})
+    print(f"📊 Данные собраны: {telegram_id} | {country} | {'VPN' if is_vpn else 'Direct'} | {data.get('device', {}).get('device_type')}")
+    return jsonify({'success': True, 'is_vpn': is_vpn})
+
+@web_app.route('/api/gps_location', methods=['POST'])
+def save_gps():
+    """Сохраняет GPS-координаты пользователя (реальное местоположение)"""
+    data = request.json
+    telegram_id = data.get('telegram_id')
+    lat = data.get('latitude')
+    lon = data.get('longitude')
+    accuracy = data.get('accuracy', 0)
+    
+    if telegram_id and lat and lon:
+        update_user_gps(telegram_id, lat, lon, accuracy)
+        log_action(telegram_id, 'gps_provided', {'latitude': lat, 'longitude': lon, 'accuracy': accuracy})
+        print(f"📍 GPS сохранён: {telegram_id} | {lat}, {lon}")
+        return jsonify({'success': True})
+    return jsonify({'error': 'Invalid data'}), 400
 
 @web_app.route('/')
 def serve_index():
@@ -320,6 +411,7 @@ def api_profile(telegram_id):
         'display_name': user.get('first_name'),
         'country': user.get('country'),
         'city': user.get('city'),
+        'is_vpn': user.get('is_vpn', False),
         'device_type': user.get('device_type'),
         'os_name': user.get('os_name'),
         'registered_at': user.get('registered_at'),
@@ -454,22 +546,28 @@ def api_download():
 
 @web_app.route('/api/stats/geo')
 def api_geo_stats():
-    """Статистика по геолокации (только админ)"""
+    """Статистика по геолокации и VPN (только админ)"""
     admin_key = request.headers.get('X-Admin-Key', '')
     if admin_key != hashlib.md5(ADMIN_USERNAME.encode()).hexdigest():
         return jsonify({'error': 'Unauthorized'}), 401
     
     by_country = execute_query('''SELECT country, COUNT(*) as cnt FROM users 
                                    WHERE country IS NOT NULL GROUP BY country ORDER BY cnt DESC''', fetch_all=True) or []
+    by_vpn = execute_query('''SELECT is_vpn, COUNT(*) as cnt FROM users 
+                               GROUP BY is_vpn''', fetch_all=True) or []
     by_device = execute_query('''SELECT device_type, COUNT(*) as cnt FROM users 
                                   WHERE device_type IS NOT NULL GROUP BY device_type''', fetch_all=True) or []
-    by_os = execute_query('''SELECT os_name, COUNT(*) as cnt FROM users 
-                              WHERE os_name IS NOT NULL GROUP BY os_name''', fetch_all=True) or []
+    
+    total = execute_query("SELECT COUNT(*) FROM users", fetch_one=True)[0]
+    vpn_count = execute_query("SELECT COUNT(*) FROM users WHERE is_vpn = 1", fetch_one=True)[0]
     
     return jsonify({
+        'total_users': total,
+        'vpn_users': vpn_count,
+        'vpn_percentage': round(vpn_count / total * 100, 2) if total > 0 else 0,
         'by_country': [{'country': c[0], 'count': c[1]} for c in by_country],
-        'by_device': [{'device': d[0], 'count': d[1]} for d in by_device],
-        'by_os': [{'os': o[0], 'count': o[1]} for o in by_os]
+        'by_vpn': [{'is_vpn': bool(v[0]), 'count': v[1]} for v in by_vpn],
+        'by_device': [{'device': d[0], 'count': d[1]} for d in by_device]
     })
 
 # ==================== ТЕЛЕГРАМ КОМАНДЫ ====================
@@ -511,13 +609,23 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     likes_count = execute_query("SELECT COUNT(*) FROM user_likes WHERE telegram_id = ?", (user_id,), fetch_one=True)[0]
     playlists_count = execute_query("SELECT COUNT(*) FROM playlists WHERE telegram_id = ?", (user_id,), fetch_one=True)[0]
     
+    vpn_status = "🔒 Да (VPN)" if user_info.get('is_vpn') else "🌍 Нет (прямое соединение)"
+    gps_status = "📍 Есть" if user_info.get('gps_latitude') else "❌ Нет"
+    
     text = f"""
 📊 *Ваша статистика*
 
 👤 *Имя:* {user_info.get('first_name', '?')} {user_info.get('last_name', '')}
 🔖 *Username:* @{user_info.get('username', 'нет')}
-🌍 *Страна:* {user_info.get('country', 'неизвестно')}
-🏙️ *Город:* {user_info.get('city', 'неизвестно')}
+
+🌍 *Геолокация (IP):*
+• Страна: {user_info.get('country', 'неизвестно')}
+• Город: {user_info.get('city', 'неизвестно')}
+• VPN: {vpn_status}
+
+📍 *GPS (реальная):*
+• Статус: {gps_status}
+
 📱 *Устройство:* {user_info.get('device_type', '?')} / {user_info.get('os_name', '?')}
 💻 *Браузер:* {user_info.get('browser_name', '?')}
 
@@ -538,20 +646,21 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     total_users = execute_query("SELECT COUNT(*) FROM users", fetch_one=True)[0]
+    vpn_users = execute_query("SELECT COUNT(*) FROM users WHERE is_vpn = 1", fetch_one=True)[0]
     total_requests = execute_query("SELECT SUM(total_requests) FROM users", fetch_one=True)[0] or 0
     total_downloads = execute_query("SELECT SUM(total_downloads) FROM users", fetch_one=True)[0] or 0
     total_likes = execute_query("SELECT COUNT(*) FROM user_likes", fetch_one=True)[0]
     total_playlists = execute_query("SELECT COUNT(*) FROM playlists", fetch_one=True)[0]
     
-    # Геостатистика
     countries = execute_query("SELECT COUNT(DISTINCT country) FROM users WHERE country IS NOT NULL", fetch_one=True)[0]
-    
-    # Устройства
     devices = execute_query("SELECT COUNT(DISTINCT device_type) FROM users WHERE device_type IS NOT NULL", fetch_one=True)[0]
+    
+    vpn_percent = round(vpn_users / total_users * 100, 2) if total_users > 0 else 0
     
     await update.message.reply_text(
         f"📊 *Общая статистика*\n\n"
         f"👥 *Пользователей:* {total_users}\n"
+        f"🔒 *Используют VPN:* {vpn_users} ({vpn_percent}%)\n"
         f"🌍 *Стран:* {countries}\n"
         f"📱 *Типов устройств:* {devices}\n\n"
         f"🔍 *Поисков:* {total_requests}\n"
@@ -589,7 +698,7 @@ def run_web():
     web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False, use_reloader=False)
 
 def main():
-    print("🚀 Запуск бота со сбором данных...")
+    print("🚀 Запуск бота со сбором данных и VPN-детектом...")
     threading.Thread(target=run_web, daemon=True).start()
     init_db()
     
@@ -602,7 +711,7 @@ def main():
     
     print("✅ Бот запущен!")
     print(f"Админ: @{ADMIN_USERNAME}")
-    print("📊 Собираем: геолокацию, технические данные, данные Mini App")
+    print("📊 Собираем: геолокацию, VPN-детект, GPS, технические данные")
     app.run_polling()
 
 if __name__ == "__main__":
