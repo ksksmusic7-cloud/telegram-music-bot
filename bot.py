@@ -1,7 +1,8 @@
 import os
 import sqlite3
+import requests
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -130,8 +131,49 @@ def get_popular_tracks(limit: int = 5):
     conn.close()
     return popular
 
-# ===== ФУНКЦИЯ СКАЧИВАНИЯ =====
-async def download_audio(query: str, chat_id: int) -> Optional[str]:
+# ===== ФУНКЦИЯ СКАЧИВАНИЯ С МЕТАДАННЫМИ =====
+def get_soundcloud_info(url: str) -> Tuple[Optional[str], Optional[str]]:
+    """Получает название трека и URL обложки со SoundCloud"""
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info:
+                title = info.get('title', '')
+                thumbnail = info.get('thumbnail', '')
+                return title, thumbnail
+    except Exception as e:
+        print(f"Ошибка получения метаданных: {e}")
+    return None, None
+
+def download_thumbnail(url: str, track_name: str) -> Optional[str]:
+    """Скачивает обложку и возвращает путь к файлу"""
+    if not url:
+        return None
+    
+    try:
+        # Очищаем название для имени файла
+        safe_name = "".join(c for c in track_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        thumb_path = f"thumb_{safe_name[:30]}.jpg"
+        
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            with open(thumb_path, 'wb') as f:
+                f.write(response.content)
+            return thumb_path
+    except Exception as e:
+        print(f"Ошибка скачивания обложки: {e}")
+    return None
+
+async def download_audio(query: str, chat_id: int) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Скачивает аудио с SoundCloud
+    Возвращает: (путь_к_mp3, название_трека, путь_к_обложке)
+    """
     filename = f"audio_{chat_id}"
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -139,21 +181,37 @@ async def download_audio(query: str, chat_id: int) -> Optional[str]:
         'quiet': True,
         'no_warnings': True,
         'default_search': 'scsearch',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Ищем трек
             info = ydl.extract_info(f"scsearch1:{query}", download=True)
             if info and 'entries' and len(info['entries']) > 0:
-                file_path = ydl.prepare_filename(info['entries'][0])
-                if os.path.exists(file_path):
-                    return file_path
-                for ext in ['.webm', '.m4a', '.opus', '.mp3']:
-                    test_path = file_path.split('.')[0] + ext
-                    if os.path.exists(test_path):
-                        return test_path
+                # Получаем URL трека
+                track_url = info['entries'][0]['webpage_url']
+                
+                # Получаем метаданные
+                real_title, thumbnail_url = get_soundcloud_info(track_url)
+                
+                # Путь к скачанному файлу
+                original_file = ydl.prepare_filename(info['entries'][0])
+                mp3_file = original_file.replace('.webm', '.mp3').replace('.m4a', '.mp3')
+                
+                if os.path.exists(mp3_file):
+                    # Скачиваем обложку
+                    thumb_path = None
+                    if thumbnail_url:
+                        thumb_path = download_thumbnail(thumbnail_url, real_title or query)
+                    
+                    return mp3_file, real_title or query, thumb_path
     except Exception as e:
         print(f"Ошибка скачивания: {e}")
-    return None
+    return None, None, None
 
 # ===== КЛАВИАТУРА =====
 def get_main_keyboard():
@@ -176,7 +234,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"🎵 Привет, {user.first_name}!\n\n"
         "Я музыкальный бот. Просто напиши название песни или исполнителя,\n"
-        "а я найду трек на SoundCloud и отправлю тебе.",
+        "а я найду трек на SoundCloud и отправлю тебе.\n\n"
+        "🎨 Теперь с обложками и реальными названиями треков!",
         reply_markup=get_main_keyboard()
     )
 
@@ -191,6 +250,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Imagine Dragons Believer
 • Billie Eilish
 • Metallica
+
+✨ *Новые возможности:*
+• Трек отправляется с реальным названием с SoundCloud
+• Обложка трека встраивается в аудио
 
 ⚙️ *Команды:*
 /start - начать
@@ -288,15 +351,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_activity(chat_id, is_download=False)
     msg = await update.message.reply_text(f"🔍 Ищу: *{query_text}*", parse_mode='Markdown')
     
-    audio_path = await download_audio(query_text, chat_id)
+    audio_path, real_title, thumb_path = await download_audio(query_text, chat_id)
     
     if audio_path and os.path.exists(audio_path):
-        with open(audio_path, 'rb') as f:
-            await update.message.reply_audio(
-                audio=f,
-                title=query_text[:60],
-                performer="SoundCloud"
-            )
+        # Отправляем аудио с обложкой и реальным названием
+        with open(audio_path, 'rb') as audio_file:
+            if thumb_path and os.path.exists(thumb_path):
+                with open(thumb_path, 'rb') as thumb_file:
+                    await update.message.reply_audio(
+                        audio=audio_file,
+                        title=real_title[:60] if real_title else query_text[:60],
+                        performer="SoundCloud",
+                        thumbnail=thumb_file
+                    )
+                os.remove(thumb_path)
+            else:
+                await update.message.reply_audio(
+                    audio=audio_file,
+                    title=real_title[:60] if real_title else query_text[:60],
+                    performer="SoundCloud"
+                )
+        
         os.remove(audio_path)
         await msg.delete()
         save_search(chat_id, query_text, success=True)
@@ -321,7 +396,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("✅ Бот запущен! (без прокси, сервер во Франкфурте)")
+    print("✅ Бот запущен! (с обложками и реальными названиями)")
     print(f"Админ: @{ADMIN_USERNAME}")
     app.run_polling()
 
