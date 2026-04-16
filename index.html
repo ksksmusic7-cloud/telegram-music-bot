@@ -21,6 +21,7 @@
             overflow: hidden;
         }
         
+        /* Tab Bar */
         .tab-bar {
             position: fixed;
             bottom: 0;
@@ -51,6 +52,7 @@
         .tab.active { color: #1ed760; }
         .tab-icon { font-size: 22px; }
         
+        /* Main Content */
         .main-content {
             position: fixed;
             top: 0;
@@ -68,6 +70,7 @@
         .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
         .header p { font-size: 15px; opacity: 0.7; }
         
+        /* Search */
         .search-box {
             width: 100%;
             padding: 14px 16px;
@@ -81,7 +84,20 @@
         .search-box:focus { outline: none; background: rgba(255, 255, 255, 0.15); }
         .search-box::placeholder { color: rgba(255, 255, 255, 0.5); }
         
+        /* Track List */
         .track-list { display: flex; flex-direction: column; gap: 8px; }
+        
+        /* Скелетон загрузки */
+        .skeleton {
+            background: linear-gradient(90deg, #1a1a1a 25%, #2a2a2a 50%, #1a1a1a 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 12px;
+        }
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
         
         .track-item {
             display: flex;
@@ -101,6 +117,7 @@
         .track-artist { font-size: 13px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .track-duration { font-size: 13px; opacity: 0.5; }
         
+        /* Mini Player */
         .mini-player {
             position: fixed;
             bottom: 60px;
@@ -131,6 +148,7 @@
         .mini-player-btn:active { background: rgba(255,255,255,0.1); }
         .mini-player-btn.play { font-size: 28px; }
         
+        /* Expanded Player */
         .expanded-player {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: #000; z-index: 200; transform: translateY(100%);
@@ -557,6 +575,16 @@
                 }
             }
             
+            async function preloadFirstTrack(tracks) {
+                if (!tracks || tracks.length === 0) return;
+                const firstTrack = tracks[0];
+                const data = await fetchAPI(`/download?url=${encodeURIComponent(firstTrack.url)}`);
+                if (data.url) {
+                    preloadedUrl = data.url;
+                    console.log('✅ Первый трек предзагружен');
+                }
+            }
+            
             async function playTrack(track) {
                 if (isLoading) return;
                 isLoading = true;
@@ -631,6 +659,7 @@
                 if (audio.duration) audio.currentTime = percent * audio.duration;
             }
             
+            // ==================== СОЗДАНИЕ ЭЛЕМЕНТА ТРЕКА ====================
             function createTrackElement(track) {
                 const div = document.createElement('div');
                 div.className = 'track-item';
@@ -644,10 +673,18 @@
                 return div;
             }
             
+            // ==================== ПОИСК ====================
             let searchTimeout;
             async function searchTracks(query) {
                 const container = document.getElementById('searchResults');
-                container.innerHTML = '<div class="loading">Поиск...</div>';
+                
+                // Показываем скелетоны
+                container.innerHTML = `
+                    <div class="skeleton" style="height: 70px; margin-bottom: 8px;"></div>
+                    <div class="skeleton" style="height: 70px; margin-bottom: 8px;"></div>
+                    <div class="skeleton" style="height: 70px; margin-bottom: 8px;"></div>
+                `;
+                
                 const tracks = await fetchAPI(`/search?q=${encodeURIComponent(query)}`);
                 if (!tracks || !tracks.length) { 
                     container.innerHTML = '<div class="empty-state">Ничего не найдено</div>'; 
@@ -655,14 +692,21 @@
                 }
                 container.innerHTML = '';
                 tracks.forEach(t => container.appendChild(createTrackElement({ ...t, track_id: t.id })));
+                
+                // Предзагружаем первый трек
+                await preloadFirstTrack(tracks);
             }
             
-            document.getElementById('searchInput').addEventListener('input', (e) => {
-                clearTimeout(searchTimeout);
-                const q = e.target.value.trim();
-                if (q.length >= 2) searchTimeout = setTimeout(() => searchTracks(q), 300);
-            });
+            const searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+                searchInput.addEventListener('input', (e) => {
+                    clearTimeout(searchTimeout);
+                    const q = e.target.value.trim();
+                    if (q.length >= 2) searchTimeout = setTimeout(() => searchTracks(q), 300);
+                });
+            }
             
+            // ==================== НАВИГАЦИЯ ====================
             function switchTab(tabId) {
                 document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
                 document.getElementById('search-tab').classList.toggle('hidden', tabId !== 'search');
@@ -675,6 +719,7 @@
             
             document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
             
+            // ==================== МОДАЛКИ ====================
             window.closePlaylistModal = () => { document.getElementById('playlistModal').classList.remove('active'); document.getElementById('playlistName').value = ''; };
             window.closeAddToPlaylistModal = () => document.getElementById('addToPlaylistModal').classList.remove('active');
             
@@ -692,6 +737,7 @@
             document.getElementById('closeExpandedBtn2').onclick = () => expandedPlayer.classList.remove('active');
             miniPlayer.onclick = () => expandedPlayer.classList.add('active');
             
+            // ==================== ЗАПУСК ====================
             loadProfile();
             switchTab('search');
         })();
