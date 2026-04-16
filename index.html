@@ -586,15 +586,21 @@
             }
             
             // ==================== playTrack С ИНДИКАТОРОМ ЗАГРУЗКИ ====================
+            let isLoading = false;
+            
             async function playTrack(track) {
+                if (isLoading) {
+                    showToast('⏳ Подождите, трек уже загружается');
+                    return;
+                }
+                
                 currentTrack = track;
                 updateMiniPlayer();
                 updateLikeButton();
                 
-                // Показываем индикатор загрузки
+                isLoading = true;
                 showToast('⏳ Загрузка трека...');
                 
-                // Меняем кнопку play на индикатор (опционально)
                 const miniPlayBtn = document.getElementById('miniPlayPauseBtn');
                 const expPlayBtn = document.getElementById('expandedPlayPauseBtn');
                 const originalMiniText = miniPlayBtn?.textContent;
@@ -604,9 +610,9 @@
                 
                 const data = await fetchAPI(`/download?url=${encodeURIComponent(track.url)}`);
                 
-                // Возвращаем кнопки
                 if (miniPlayBtn) miniPlayBtn.textContent = originalMiniText || '▶️';
                 if (expPlayBtn) expPlayBtn.textContent = originalExpText || '▶️';
+                isLoading = false;
                 
                 if (data.url) {
                     audio.src = data.url;
@@ -678,7 +684,6 @@
                                  <div class="track-info"><div class="track-title">${escapeHtml(track.title)}</div><div class="track-artist">${escapeHtml(track.artist)}</div></div>
                                  <div class="track-duration">${formatTime(track.duration)}</div>`;
                 
-                // Нажатие → сразу играет
                 div.onclick = () => {
                     setQueue([track]);
                     playTrack(track);
