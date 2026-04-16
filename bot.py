@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, List
 from collections import deque
 import json
+import hashlib
 
 import yt_dlp
 from flask import Flask, send_from_directory, request, jsonify
@@ -19,6 +20,7 @@ from telegram.ext import (
 # ===== НАСТРОЙКИ =====
 TOKEN = "8410866218:AAFwRJj2RbRuEAMJayfAYnpAOMMdEKdpA_A"
 ADMIN_USERNAME = "okey2010"
+APP_URL = "https://telegram-music-bot-a9vg.onrender.com"
 
 # Очередь запросов
 user_queues: Dict[int, deque] = {}
@@ -35,6 +37,81 @@ QUALITIES = {
 web_app = Flask(__name__)
 
 # ===== API ДЛЯ MINI APP =====
+def init_app_db():
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    
+    # Профили пользователей
+    c.execute('''CREATE TABLE IF NOT EXISTS user_profiles
+                 (telegram_id INTEGER PRIMARY KEY,
+                  username TEXT,
+                  display_name TEXT,
+                  avatar_url TEXT,
+                  created_at TIMESTAMP,
+                  last_seen TIMESTAMP)''')
+    
+    # Лайки
+    c.execute('''CREATE TABLE IF NOT EXISTS user_likes
+                 (telegram_id INTEGER,
+                  track_id TEXT,
+                  track_title TEXT,
+                  track_artist TEXT,
+                  track_url TEXT,
+                  track_thumbnail TEXT,
+                  liked_at TIMESTAMP,
+                  PRIMARY KEY (telegram_id, track_id))''')
+    
+    # Плейлисты
+    c.execute('''CREATE TABLE IF NOT EXISTS playlists
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  telegram_id INTEGER,
+                  name TEXT,
+                  description TEXT,
+                  cover_url TEXT,
+                  created_at TIMESTAMP,
+                  is_public BOOLEAN DEFAULT 0)''')
+    
+    # Треки в плейлистах
+    c.execute('''CREATE TABLE IF NOT EXISTS playlist_tracks
+                 (playlist_id INTEGER,
+                  track_id TEXT,
+                  track_title TEXT,
+                  track_artist TEXT,
+                  track_url TEXT,
+                  track_thumbnail TEXT,
+                  added_at TIMESTAMP,
+                  position INTEGER,
+                  PRIMARY KEY (playlist_id, track_id))''')
+    
+    # История прослушиваний
+    c.execute('''CREATE TABLE IF NOT EXISTS listening_history
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  telegram_id INTEGER,
+                  track_id TEXT,
+                  track_title TEXT,
+                  track_artist TEXT,
+                  listened_at TIMESTAMP)''')
+    
+    # Статистика для админа
+    c.execute('''CREATE TABLE IF NOT EXISTS admin_stats
+                 (date DATE PRIMARY KEY,
+                  total_users INTEGER,
+                  total_searches INTEGER,
+                  total_likes INTEGER,
+                  total_playlists INTEGER,
+                  popular_tracks TEXT)''')
+    
+    # Публичные ссылки на плейлисты
+    c.execute('''CREATE TABLE IF NOT EXISTS shared_playlists
+                 (share_id TEXT PRIMARY KEY,
+                  playlist_id INTEGER,
+                  telegram_id INTEGER,
+                  created_at TIMESTAMP,
+                  expires_at TIMESTAMP)''')
+    
+    conn.commit()
+    conn.close()
+
 @web_app.route('/')
 def serve_index():
     return send_from_directory('.', 'index.html')
@@ -96,29 +173,124 @@ def download():
         print(f"Download API ошибка: {e}")
     return jsonify({'error': 'Download failed'})
 
-# ===== API ДЛЯ ПРОФИЛЯ И ЛАЙКОВ =====
-def init_app_db():
+# ===== API ПЛЕЙЛИСТОВ =====
+@web_app.route('/api/playlists/<int:telegram_id>', methods=['GET', 'POST'])
+def handle_playlists(telegram_id):
     conn = sqlite3.connect('music_bot.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS user_profiles
-                 (telegram_id INTEGER PRIMARY KEY,
-                  username TEXT,
-                  display_name TEXT,
-                  avatar_url TEXT,
-                  created_at TIMESTAMP)''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS user_likes
-                 (telegram_id INTEGER,
-                  track_id TEXT,
-                  track_title TEXT,
-                  track_artist TEXT,
-                  track_url TEXT,
-                  track_thumbnail TEXT,
-                  liked_at TIMESTAMP,
-                  PRIMARY KEY (telegram_id, track_id))''')
+    if request.method == 'GET':
+        c.execute('''SELECT id, name, description, cover_url, created_at, is_public 
+                     FROM playlists WHERE telegram_id = ? ORDER BY created_at DESC''', (telegram_id,))
+        playlists = c.fetchall()
+        conn.close()
+        return jsonify([{
+            'id': p[0],
+            'name': p[1],
+            'description': p[2],
+            'cover_url': p[3],
+            'created_at': p[4],
+            'is_public': bool(p[5])
+        } for p in playlists])
+    
+    elif request.method == 'POST':
+        data = request.json
+        c.execute('''INSERT INTO playlists (telegram_id, name, description, cover_url, created_at, is_public)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
+                  (telegram_id, data.get('name'), data.get('description', ''), 
+                   data.get('cover_url', ''), datetime.now(), data.get('is_public', False)))
+        conn.commit()
+        playlist_id = c.lastrowid
+        conn.close()
+        return jsonify({'id': playlist_id, 'success': True})
+
+@web_app.route('/api/playlists/<int:playlist_id>/tracks', methods=['GET', 'POST', 'DELETE'])
+def handle_playlist_tracks(playlist_id):
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        c.execute('''SELECT track_id, track_title, track_artist, track_url, track_thumbnail, added_at, position
+                     FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC''', (playlist_id,))
+        tracks = c.fetchall()
+        conn.close()
+        return jsonify([{
+            'track_id': t[0],
+            'title': t[1],
+            'artist': t[2],
+            'url': t[3],
+            'thumbnail': t[4],
+            'added_at': t[5],
+            'position': t[6]
+        } for t in tracks])
+    
+    elif request.method == 'POST':
+        data = request.json
+        c.execute('''SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?''', (playlist_id,))
+        count = c.fetchone()[0]
+        c.execute('''INSERT OR REPLACE INTO playlist_tracks 
+                     (playlist_id, track_id, track_title, track_artist, track_url, track_thumbnail, added_at, position)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (playlist_id, data.get('track_id'), data.get('title'), data.get('artist'),
+                   data.get('url'), data.get('thumbnail'), datetime.now(), count))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    
+    elif request.method == 'DELETE':
+        track_id = request.args.get('track_id')
+        if track_id:
+            c.execute("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?", (playlist_id, track_id))
+            conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+@web_app.route('/api/playlists/<int:playlist_id>/share', methods=['POST'])
+def share_playlist(playlist_id):
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    
+    share_id = hashlib.md5(f"{playlist_id}{datetime.now()}".encode()).hexdigest()[:16]
+    expires_at = datetime.now() + timedelta(days=7)
+    
+    c.execute('''INSERT INTO shared_playlists (share_id, playlist_id, telegram_id, created_at, expires_at)
+                 SELECT ?, ?, telegram_id, ?, ? FROM playlists WHERE id = ?''',
+              (share_id, playlist_id, datetime.now(), expires_at, playlist_id))
     conn.commit()
     conn.close()
+    
+    return jsonify({'share_url': f"{APP_URL}/shared/{share_id}"})
 
+@web_app.route('/api/shared/<share_id>')
+def get_shared_playlist(share_id):
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    
+    c.execute('''SELECT p.id, p.name, p.description, p.telegram_id, up.display_name
+                 FROM shared_playlists sp
+                 JOIN playlists p ON sp.playlist_id = p.id
+                 JOIN user_profiles up ON p.telegram_id = up.telegram_id
+                 WHERE sp.share_id = ? AND (sp.expires_at > ? OR sp.expires_at IS NULL)''', 
+              (share_id, datetime.now()))
+    playlist = c.fetchone()
+    
+    if not playlist:
+        conn.close()
+        return jsonify({'error': 'Playlist not found or expired'})
+    
+    c.execute('''SELECT track_id, track_title, track_artist, track_url, track_thumbnail
+                 FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC''', (playlist[0],))
+    tracks = c.fetchall()
+    conn.close()
+    
+    return jsonify({
+        'name': playlist[1],
+        'description': playlist[2],
+        'owner': playlist[4],
+        'tracks': [{'title': t[1], 'artist': t[2], 'url': t[3], 'thumbnail': t[4]} for t in tracks]
+    })
+
+# ===== API ПРОФИЛЯ И ЛАЙКОВ =====
 @web_app.route('/api/profile/<int:telegram_id>', methods=['GET', 'POST', 'PUT'])
 def handle_profile(telegram_id):
     conn = sqlite3.connect('music_bot.db')
@@ -127,24 +299,41 @@ def handle_profile(telegram_id):
     if request.method == 'GET':
         c.execute("SELECT * FROM user_profiles WHERE telegram_id = ?", (telegram_id,))
         profile = c.fetchone()
+        
+        # Статистика
+        c.execute("SELECT COUNT(*) FROM user_likes WHERE telegram_id = ?", (telegram_id,))
+        likes_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM playlists WHERE telegram_id = ?", (telegram_id,))
+        playlists_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM listening_history WHERE telegram_id = ?", (telegram_id,))
+        history_count = c.fetchone()[0]
+        
         conn.close()
+        
         if profile:
             return jsonify({
                 'telegram_id': profile[0],
                 'username': profile[1],
                 'display_name': profile[2],
                 'avatar_url': profile[3],
-                'created_at': profile[4]
+                'created_at': profile[4],
+                'last_seen': profile[5],
+                'stats': {
+                    'likes': likes_count,
+                    'playlists': playlists_count,
+                    'listened': history_count
+                },
+                'exists': True
             })
         return jsonify({'exists': False})
     
     elif request.method == 'POST':
         data = request.json
         c.execute('''INSERT OR REPLACE INTO user_profiles 
-                     (telegram_id, username, display_name, avatar_url, created_at)
-                     VALUES (?, ?, ?, ?, ?)''',
+                     (telegram_id, username, display_name, avatar_url, created_at, last_seen)
+                     VALUES (?, ?, ?, ?, ?, ?)''',
                   (telegram_id, data.get('username', ''), data.get('display_name', ''),
-                   data.get('avatar_url', ''), datetime.now()))
+                   data.get('avatar_url', ''), datetime.now(), datetime.now()))
         conn.commit()
         conn.close()
         return jsonify({'success': True})
@@ -152,9 +341,9 @@ def handle_profile(telegram_id):
     elif request.method == 'PUT':
         data = request.json
         c.execute('''UPDATE user_profiles 
-                     SET display_name = ?, avatar_url = ?
+                     SET display_name = ?, avatar_url = ?, last_seen = ?
                      WHERE telegram_id = ?''',
-                  (data.get('display_name', ''), data.get('avatar_url', ''), telegram_id))
+                  (data.get('display_name', ''), data.get('avatar_url', ''), datetime.now(), telegram_id))
         conn.commit()
         conn.close()
         return jsonify({'success': True})
@@ -197,14 +386,92 @@ def handle_likes(telegram_id):
         conn.close()
         return jsonify({'success': True})
 
-@web_app.route('/api/likes/<int:telegram_id>/check/<track_id>')
-def check_like(telegram_id, track_id):
+@web_app.route('/api/history/<int:telegram_id>', methods=['GET', 'POST'])
+def handle_history(telegram_id):
     conn = sqlite3.connect('music_bot.db')
     c = conn.cursor()
-    c.execute("SELECT 1 FROM user_likes WHERE telegram_id = ? AND track_id = ?", (telegram_id, track_id))
-    exists = c.fetchone() is not None
+    
+    if request.method == 'GET':
+        c.execute('''SELECT track_id, track_title, track_artist, listened_at 
+                     FROM listening_history 
+                     WHERE telegram_id = ? 
+                     ORDER BY listened_at DESC 
+                     LIMIT 50''', (telegram_id,))
+        history = c.fetchall()
+        conn.close()
+        return jsonify([{
+            'track_id': h[0],
+            'title': h[1],
+            'artist': h[2],
+            'listened_at': h[3]
+        } for h in history])
+    
+    elif request.method == 'POST':
+        data = request.json
+        c.execute('''INSERT INTO listening_history (telegram_id, track_id, track_title, track_artist, listened_at)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (telegram_id, data.get('track_id'), data.get('title'), data.get('artist'), datetime.now()))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+# ===== API АДМИНА (статистика) =====
+@web_app.route('/api/admin/stats')
+def admin_stats():
+    # Проверка админа через заголовок
+    admin_key = request.headers.get('X-Admin-Key', '')
+    if admin_key != hashlib.md5(ADMIN_USERNAME.encode()).hexdigest():
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    
+    # Общая статистика
+    c.execute("SELECT COUNT(*) FROM user_profiles")
+    total_users = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM user_likes")
+    total_likes = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM playlists")
+    total_playlists = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM listening_history")
+    total_listens = c.fetchone()[0]
+    
+    # Активность за последние 7 дней
+    week_ago = datetime.now() - timedelta(days=7)
+    c.execute('''SELECT DATE(listened_at), COUNT(*) 
+                 FROM listening_history 
+                 WHERE listened_at > ? 
+                 GROUP BY DATE(listened_at)''', (week_ago,))
+    weekly_activity = dict(c.fetchall())
+    
+    # Популярные треки
+    c.execute('''SELECT track_title, track_artist, COUNT(*) as cnt 
+                 FROM listening_history 
+                 GROUP BY track_id 
+                 ORDER BY cnt DESC 
+                 LIMIT 10''')
+    popular_tracks = c.fetchall()
+    
+    # Активные пользователи
+    c.execute('''SELECT COUNT(DISTINCT telegram_id) 
+                 FROM listening_history 
+                 WHERE listened_at > ?''', (week_ago,))
+    active_users = c.fetchone()[0]
+    
     conn.close()
-    return jsonify({'liked': exists})
+    
+    return jsonify({
+        'total_users': total_users,
+        'total_likes': total_likes,
+        'total_playlists': total_playlists,
+        'total_listens': total_listens,
+        'active_users_last_7d': active_users,
+        'weekly_activity': weekly_activity,
+        'popular_tracks': [{'title': t[0], 'artist': t[1], 'plays': t[2]} for t in popular_tracks]
+    })
 
 def run_web():
     port = int(os.environ.get('PORT', 10000))
@@ -532,7 +799,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Очередь запросов\n"
         "• Инлайн-режим (работает в любом чате)\n"
         "• Выбор качества (128/192/320 kbps)\n"
-        "• Веб-приложение с профилем и библиотекой",
+        "• Веб-приложение с профилем, плейлистами и библиотекой\n"
+        "• Поделиться плейлистом с друзьями\n"
+        "• Установка на рабочий стол (PWA)",
         reply_markup=get_main_keyboard(),
         parse_mode='Markdown'
     )
@@ -586,6 +855,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📅 *За сегодня:*
 • Поисков: {today['searches']}
 • Новых пользователей: {today['new_users']}
+
+📱 *Для детальной аналитики открой веб-приложение и войди в админ-панель*
     """
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -689,6 +960,10 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 query = payload.get('query')
                 if query:
                     await download_audio_with_queue(update.effective_chat.id, query)
+            elif payload.get('action') == 'share':
+                url = payload.get('url')
+                if url:
+                    await update.message.reply_text(f"🎵 Слушай этот трек!\n{url}")
         except Exception as e:
             print(f"WebApp ошибка: {e}")
 
