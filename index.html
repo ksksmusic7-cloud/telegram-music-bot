@@ -16,24 +16,51 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             background: var(--tg-theme-bg-color, #ffffff);
             color: var(--tg-theme-text-color, #000000);
-            padding: 16px;
+            padding: 0;
+            margin: 0;
         }
         
         .container {
             max-width: 600px;
             margin: 0 auto;
+            padding: 20px 16px 100px 16px;
+        }
+        
+        .header {
+            margin-bottom: 24px;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            letter-spacing: -0.3px;
+        }
+        
+        .header p {
+            font-size: 15px;
+            opacity: 0.7;
+        }
+        
+        .search-container {
+            margin-bottom: 24px;
         }
         
         .search-box {
             width: 100%;
-            padding: 12px 16px;
+            padding: 14px 16px;
             font-size: 16px;
-            border: 1px solid var(--tg-theme-hint-color, #cccccc);
-            border-radius: 12px;
-            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            border: 1px solid var(--tg-theme-hint-color, #e0e0e0);
+            border-radius: 14px;
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
             color: var(--tg-theme-text-color, #000000);
-            margin-bottom: 20px;
             box-sizing: border-box;
+            transition: all 0.2s ease;
+        }
+        
+        .search-box:focus {
+            outline: none;
+            border-color: var(--tg-theme-button-color, #007aff);
         }
         
         .track-list {
@@ -45,94 +72,141 @@
         .track-item {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 14px;
             padding: 12px;
-            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
-            border-radius: 12px;
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+            border-radius: 16px;
             cursor: pointer;
-            transition: opacity 0.2s;
+            transition: transform 0.15s ease, background 0.2s ease;
         }
         
-        .track-item:hover {
-            opacity: 0.8;
+        .track-item:active {
+            transform: scale(0.98);
+            background: var(--tg-theme-hint-color, #e0e0e0);
         }
         
         .track-cover {
-            width: 50px;
-            height: 50px;
-            border-radius: 8px;
-            background: var(--tg-theme-hint-color, #cccccc);
+            width: 56px;
+            height: 56px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 24px;
+            flex-shrink: 0;
         }
         
         .track-info {
             flex: 1;
+            min-width: 0;
         }
         
         .track-title {
             font-weight: 600;
             margin-bottom: 4px;
+            font-size: 15px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         .track-artist {
-            font-size: 12px;
+            font-size: 13px;
             opacity: 0.7;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .track-duration {
+            font-size: 13px;
+            opacity: 0.5;
+            flex-shrink: 0;
         }
         
         .loading {
             text-align: center;
-            padding: 20px;
+            padding: 40px 20px;
             opacity: 0.7;
         }
         
-        .audio-player {
+        .player {
             position: fixed;
             bottom: 0;
             left: 0;
             right: 0;
-            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
-            padding: 12px;
-            border-top: 1px solid var(--tg-theme-hint-color, #cccccc);
-            display: none;
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+            backdrop-filter: blur(20px);
+            border-top: 0.5px solid var(--tg-theme-hint-color, #e0e0e0);
+            padding: 12px 16px;
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+            z-index: 100;
         }
         
-        .audio-player audio {
-            width: 100%;
+        .player.active {
+            transform: translateY(0);
         }
         
         .player-title {
             font-size: 14px;
             font-weight: 600;
-            margin-bottom: 8px;
+            margin-bottom: 10px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        audio {
+            width: 100%;
+            border-radius: 12px;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            opacity: 0.5;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
+        
+        .loading-dots {
+            animation: pulse 1.5s ease-in-out infinite;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎵 Music Bot</h1>
-        <div class="subtitle">Найди и слушай музыку</div>
+        <div class="header">
+            <h1>Music Bot</h1>
+            <p>Найди и слушай любую музыку</p>
+        </div>
         
-        <input type="text" class="search-box" id="searchInput" placeholder="Поиск песен, исполнителей..." autofocus>
+        <div class="search-container">
+            <input type="text" class="search-box" id="searchInput" placeholder="Поиск песен, исполнителей..." autofocus>
+        </div>
         
         <div class="track-list" id="trackList">
-            <div class="loading">Введите запрос для поиска...</div>
+            <div class="empty-state">Введите запрос для поиска</div>
         </div>
     </div>
     
-    <div class="audio-player" id="audioPlayer">
+    <div class="player" id="player">
         <div class="player-title" id="playerTitle"></div>
-        <audio id="audio" controls></audio>
+        <audio id="audio" controls preload="none"></audio>
     </div>
     
     <script>
-        let tg = window.Telegram.WebApp;
+        const tg = window.Telegram.WebApp;
         tg.ready();
         tg.expand();
         
+        let searchTimeout;
         let currentAudio = null;
+        let currentUrl = null;
         
         function sendSearch(query) {
             tg.sendData(JSON.stringify({ action: 'search', query: query }));
@@ -141,14 +215,14 @@
         
         async function searchTracks(query) {
             const trackList = document.getElementById('trackList');
-            trackList.innerHTML = '<div class="loading">Поиск...</div>';
+            trackList.innerHTML = '<div class="loading"><span class="loading-dots">Поиск</span></div>';
             
             try {
                 const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
                 const tracks = await response.json();
                 
-                if (tracks.length === 0) {
-                    trackList.innerHTML = '<div class="loading">Ничего не найдено. Попробуйте другой запрос.</div>';
+                if (!tracks || tracks.length === 0) {
+                    trackList.innerHTML = '<div class="empty-state">Ничего не найдено<br>Попробуйте другой запрос</div>';
                     return;
                 }
                 
@@ -160,24 +234,32 @@
                         <div class="track-cover">🎵</div>
                         <div class="track-info">
                             <div class="track-title">${escapeHtml(track.title)}</div>
-                            <div class="track-artist">${escapeHtml(track.artist)} • ${formatDuration(track.duration)}</div>
+                            <div class="track-artist">${escapeHtml(track.artist)}</div>
                         </div>
+                        <div class="track-duration">${formatDuration(track.duration)}</div>
                     `;
                     trackEl.onclick = () => playTrack(track.url, track.title);
                     trackList.appendChild(trackEl);
                 });
             } catch (e) {
-                trackList.innerHTML = '<div class="loading">Ошибка поиска. Попробуйте позже.</div>';
+                console.error(e);
+                trackList.innerHTML = '<div class="empty-state">Ошибка поиска<br>Попробуйте позже</div>';
             }
         }
         
         async function playTrack(url, title) {
-            const playerDiv = document.getElementById('audioPlayer');
+            const player = document.getElementById('player');
             const audio = document.getElementById('audio');
             const playerTitle = document.getElementById('playerTitle');
             
+            // Если уже играет этот же трек, ничего не делаем
+            if (currentUrl === url && !audio.paused) {
+                return;
+            }
+            
             playerTitle.textContent = title;
-            playerDiv.style.display = 'block';
+            player.classList.add('active');
+            currentUrl = url;
             
             try {
                 const response = await fetch(`/download?url=${encodeURIComponent(url)}`);
@@ -195,7 +277,7 @@
         }
         
         function formatDuration(seconds) {
-            if (!seconds) return '?';
+            if (!seconds || seconds === 0) return '?';
             const mins = Math.floor(seconds / 60);
             const secs = seconds % 60;
             return `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -207,15 +289,14 @@
             return div.innerHTML;
         }
         
-        let searchTimeout;
         const searchInput = document.getElementById('searchInput');
         searchInput.addEventListener('input', (e) => {
             clearTimeout(searchTimeout);
             const query = e.target.value.trim();
-            if (query.length > 2) {
+            if (query.length >= 2) {
                 searchTimeout = setTimeout(() => searchTracks(query), 500);
             } else if (query.length === 0) {
-                document.getElementById('trackList').innerHTML = '<div class="loading">Введите запрос для поиска...</div>';
+                document.getElementById('trackList').innerHTML = '<div class="empty-state">Введите запрос для поиска</div>';
             }
         });
         
