@@ -5,6 +5,7 @@ import threading
 import json
 import hashlib
 import platform
+import requests as http_requests
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple, List
 from collections import deque
@@ -38,7 +39,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Основная таблица пользователей
+    # Основная таблица пользователей (расширенная)
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         chat_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -51,12 +52,43 @@ def init_db():
         bio TEXT,
         registered_at TIMESTAMP,
         last_active TIMESTAMP,
+        
+        -- Геолокация
         last_ip TEXT,
+        country TEXT,
+        city TEXT,
+        region TEXT,
+        timezone TEXT,
+        latitude REAL,
+        longitude REAL,
+        
+        -- Технические данные
         user_agent TEXT,
         device_type TEXT,
+        device_brand TEXT,
+        device_model TEXT,
         os_name TEXT,
         os_version TEXT,
         app_version TEXT,
+        browser_name TEXT,
+        browser_version TEXT,
+        screen_width INTEGER,
+        screen_height INTEGER,
+        screen_color_depth INTEGER,
+        device_pixel_ratio REAL,
+        hardware_concurrency INTEGER,
+        max_touch_points INTEGER,
+        touch_support BOOLEAN,
+        
+        -- Сеть и питание
+        network_type TEXT,
+        network_downlink REAL,
+        network_rtt INTEGER,
+        battery_level INTEGER,
+        is_charging BOOLEAN,
+        power_save_mode BOOLEAN,
+        
+        -- Поведенческие
         total_requests INTEGER DEFAULT 0,
         total_downloads INTEGER DEFAULT 0,
         total_likes INTEGER DEFAULT 0,
@@ -115,7 +147,9 @@ def init_db():
         login_time TIMESTAMP,
         logout_time TIMESTAMP,
         ip_address TEXT,
-        device_info TEXT
+        device_info TEXT,
+        location_city TEXT,
+        location_country TEXT
     )''')
     
     # Действия пользователей
@@ -127,36 +161,16 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Реферальная система
-    c.execute('''CREATE TABLE IF NOT EXISTS referrals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        referrer_chat_id INTEGER,
-        referred_chat_id INTEGER,
-        created_at TIMESTAMP,
-        is_active BOOLEAN DEFAULT 1
-    )''')
-    
-    # Ежедневная статистика
-    c.execute('''CREATE TABLE IF NOT EXISTS user_daily_stats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id INTEGER,
-        date DATE,
-        searches INTEGER DEFAULT 0,
-        downloads INTEGER DEFAULT 0,
-        likes_added INTEGER DEFAULT 0,
-        listening_time INTEGER DEFAULT 0,
-        UNIQUE(chat_id, date)
-    )''')
-    
     # Индексы
     c.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_users_last_ip ON users(last_ip)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_users_country ON users(country)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_users_device ON users(device_type)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_likes_telegram_id ON user_likes(telegram_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_playlists_telegram_id ON playlists(telegram_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_actions_chat_id ON user_actions(chat_id)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_actions_created_at ON user_actions(created_at)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON user_daily_stats(date)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_sessions_chat_id ON user_sessions(chat_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_sessions_login_time ON user_sessions(login_time)')
     
     conn.commit()
     conn.close()
@@ -176,14 +190,9 @@ def log_action(chat_id: int, action_type: str, action_data: dict = None):
     execute_query("INSERT INTO user_actions (chat_id, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
                   (chat_id, action_type, json.dumps(action_data, ensure_ascii=False) if action_data else None, datetime.now()))
 
-def update_daily_stats(chat_id: int, searches=0, downloads=0, likes=0, listening=0):
-    today = datetime.now().date()
-    execute_query('''INSERT INTO user_daily_stats (chat_id, date, searches, downloads, likes_added, listening_time)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(chat_id, date) DO UPDATE SET
-                     searches = searches + ?, downloads = downloads + ?,
-                     likes_added = likes_added + ?, listening_time = listening_time + ?''',
-                  (chat_id, today, searches, downloads, likes, listening, searches, downloads, likes, listening))
+def update_user_stats(chat_id: int, field: str, increment: int = 1):
+    execute_query(f"UPDATE users SET {field} = {field} + ?, last_active = ? WHERE chat_id = ?",
+                  (increment, datetime.now(), chat_id))
 
 def add_user_full(chat_id: int, username: str, first_name: str, last_name: str, language_code: str = None, is_premium: bool = False):
     referral_code = hashlib.md5(f"{chat_id}_{datetime.now()}".encode()).hexdigest()[:8]
@@ -193,32 +202,45 @@ def add_user_full(chat_id: int, username: str, first_name: str, last_name: str, 
         (chat_id, username or "", first_name or "", last_name or "",
          language_code, 1 if is_premium else 0, datetime.now(), datetime.now(), DEFAULT_QUALITY, referral_code))
     
-    # Обновляем существующего
     execute_query('''UPDATE users SET 
         last_active = ?, username = ?, first_name = ?, last_name = ?, language_code = ?, is_premium = ?
         WHERE chat_id = ?''',
         (datetime.now(), username or "", first_name or "", last_name or "", language_code, 1 if is_premium else 0, chat_id))
 
-def update_user_stats(chat_id: int, field: str, increment: int = 1):
-    execute_query(f"UPDATE users SET {field} = {field} + ?, last_active = ? WHERE chat_id = ?",
-                  (increment, datetime.now(), chat_id))
+def update_user_geo(chat_id: int, ip: str, country: str, city: str, region: str, timezone: str, lat: float, lon: float):
+    execute_query('''UPDATE users SET 
+                     last_ip = ?, country = ?, city = ?, region = ?, timezone = ?, latitude = ?, longitude = ?
+                     WHERE chat_id = ?''',
+                  (ip, country, city, region, timezone, lat, lon, chat_id))
 
-def update_user_ip(chat_id: int, ip: str, user_agent: str = None, device_type: str = None, os_name: str = None):
-    """Обновляет IP и информацию об устройстве пользователя"""
-    if user_agent:
-        execute_query("UPDATE users SET last_ip = ?, user_agent = ?, device_type = ?, os_name = ? WHERE chat_id = ?",
-                      (ip, user_agent[:500], device_type or 'unknown', os_name or 'unknown', chat_id))
-    else:
-        execute_query("UPDATE users SET last_ip = ? WHERE chat_id = ?", (ip, chat_id))
-    log_action(chat_id, 'ip_update', {'ip': ip, 'user_agent': user_agent[:200] if user_agent else None})
+def update_user_device(chat_id: int, data: dict):
+    execute_query('''UPDATE users SET 
+                     user_agent = ?, device_type = ?, device_brand = ?, device_model = ?,
+                     os_name = ?, os_version = ?, browser_name = ?, browser_version = ?,
+                     screen_width = ?, screen_height = ?, screen_color_depth = ?, device_pixel_ratio = ?,
+                     hardware_concurrency = ?, max_touch_points = ?, touch_support = ?,
+                     network_type = ?, network_downlink = ?, network_rtt = ?,
+                     battery_level = ?, is_charging = ?, power_save_mode = ?
+                     WHERE chat_id = ?''',
+                  (data.get('user_agent'), data.get('device_type'), data.get('device_brand'), data.get('device_model'),
+                   data.get('os_name'), data.get('os_version'), data.get('browser_name'), data.get('browser_version'),
+                   data.get('screen_width'), data.get('screen_height'), data.get('screen_color_depth'), data.get('device_pixel_ratio'),
+                   data.get('hardware_concurrency'), data.get('max_touch_points'), 1 if data.get('touch_support') else 0,
+                   data.get('network_type'), data.get('network_downlink'), data.get('network_rtt'),
+                   data.get('battery_level'), 1 if data.get('is_charging') else 0, 1 if data.get('power_save_mode') else 0,
+                   chat_id))
 
 def get_user_full_info(chat_id: int) -> dict:
     user = execute_query('''SELECT * FROM users WHERE chat_id = ?''', (chat_id,), fetch_one=True)
     if not user:
         return {}
     columns = ['chat_id', 'username', 'first_name', 'last_name', 'language_code', 'is_premium', 'is_bot',
-               'phone_number', 'bio', 'registered_at', 'last_active', 'last_ip', 'user_agent',
-               'device_type', 'os_name', 'os_version', 'app_version', 'total_requests', 'total_downloads',
+               'phone_number', 'bio', 'registered_at', 'last_active', 'last_ip', 'country', 'city', 'region',
+               'timezone', 'latitude', 'longitude', 'user_agent', 'device_type', 'device_brand', 'device_model',
+               'os_name', 'os_version', 'app_version', 'browser_name', 'browser_version', 'screen_width',
+               'screen_height', 'screen_color_depth', 'device_pixel_ratio', 'hardware_concurrency',
+               'max_touch_points', 'touch_support', 'network_type', 'network_downlink', 'network_rtt',
+               'battery_level', 'is_charging', 'power_save_mode', 'total_requests', 'total_downloads',
                'total_likes', 'total_playlists', 'total_listening_time', 'quality', 'referral_code',
                'referred_by', 'is_blocked', 'block_reason', 'notes']
     return {columns[i]: user[i] for i in range(len(columns))}
@@ -226,42 +248,57 @@ def get_user_full_info(chat_id: int) -> dict:
 # ==================== ВЕБ-СЕРВЕР ====================
 web_app = Flask(__name__)
 
-# ==================== IP ЛОГИРОВАНИЕ ПРИ ОТКРЫТИИ MINI APP ====================
-@web_app.route('/api/ip_log', methods=['POST'])
-def log_ip():
-    """Сохраняет IP и информацию об устройстве, когда пользователь открывает Mini App"""
+# ==================== API ДЛЯ СБОРА ДАННЫХ ====================
+@web_app.route('/api/collect_data', methods=['POST'])
+def collect_data():
+    """Основной API для сбора всех данных пользователя"""
     data = request.json
     telegram_id = data.get('telegram_id')
     
     if not telegram_id:
         return jsonify({'error': 'No telegram_id'}), 400
     
-    # Получаем реальный IP (с учетом прокси)
+    # Получаем IP
     ip = request.remote_addr
     if request.headers.get('X-Forwarded-For'):
         ip = request.headers.get('X-Forwarded-For').split(',')[0].strip()
     elif request.headers.get('X-Real-IP'):
         ip = request.headers.get('X-Real-IP')
     
-    # Если IP передан с клиента (через api.ipify.org)
-    if data.get('ip') and data.get('ip') != 'unknown':
-        ip = data.get('ip')
+    # Геолокация по IP
+    country = city = region = timezone = None
+    lat = lon = None
     
-    user_agent = data.get('user_agent') or request.headers.get('User-Agent', '')
-    device_type = data.get('device_type', 'unknown')
-    os_name = data.get('os_name', 'unknown')
+    try:
+        geo_resp = http_requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
+        if geo_resp.status_code == 200:
+            geo = geo_resp.json()
+            if geo.get('status') == 'success':
+                country = geo.get('country')
+                city = geo.get('city')
+                region = geo.get('regionName')
+                timezone = geo.get('timezone')
+                lat = geo.get('lat')
+                lon = geo.get('lon')
+    except:
+        pass
     
-    # Сохраняем в БД
-    update_user_ip(telegram_id, ip, user_agent, device_type, os_name)
+    # Сохраняем геоданные
+    update_user_geo(telegram_id, ip, country, city, region, timezone, lat, lon)
+    
+    # Сохраняем технические данные
+    update_user_device(telegram_id, data.get('device', {}))
     
     # Сохраняем сессию
     session_id = data.get('session_id', hashlib.md5(f"{telegram_id}_{datetime.now()}".encode()).hexdigest()[:16])
-    execute_query('''INSERT INTO user_sessions (chat_id, session_id, login_time, ip_address, device_info)
-                     VALUES (?, ?, ?, ?, ?)''',
-                  (telegram_id, session_id, datetime.now(), ip, user_agent[:200]))
+    execute_query('''INSERT INTO user_sessions (chat_id, session_id, login_time, ip_address, device_info, location_city, location_country)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                  (telegram_id, session_id, datetime.now(), ip, json.dumps(data.get('device', {})), city, country))
     
-    print(f"📡 IP сохранён: {telegram_id} -> {ip} [{device_type}/{os_name}]")
-    return jsonify({'success': True, 'ip': ip})
+    log_action(telegram_id, 'device_data_collected', {'ip': ip, 'country': country, 'device': data.get('device', {}).get('device_type')})
+    
+    print(f"📊 Данные собраны: {telegram_id} | {country} | {data.get('device', {}).get('device_type')}")
+    return jsonify({'success': True})
 
 @web_app.route('/')
 def serve_index():
@@ -281,8 +318,10 @@ def api_profile(telegram_id):
         'telegram_id': telegram_id,
         'username': user.get('username'),
         'display_name': user.get('first_name'),
-        'last_ip': user.get('last_ip'),
+        'country': user.get('country'),
+        'city': user.get('city'),
         'device_type': user.get('device_type'),
+        'os_name': user.get('os_name'),
         'registered_at': user.get('registered_at'),
         'last_active': user.get('last_active'),
         'total_requests': user.get('total_requests'),
@@ -310,7 +349,6 @@ def api_likes(telegram_id):
                       (telegram_id, data.get('track_id'), data.get('title'), data.get('artist'),
                        data.get('url'), data.get('thumbnail', ''), datetime.now()))
         update_user_stats(telegram_id, 'total_likes')
-        update_daily_stats(telegram_id, likes=1)
         log_action(telegram_id, 'like', {'track_id': data.get('track_id'), 'title': data.get('title')})
         return jsonify({'success': True})
     
@@ -370,24 +408,6 @@ def api_playlist_tracks(playlist_id):
             execute_query("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?", (playlist_id, track_id))
         return jsonify({'success': True})
 
-@web_app.route('/api/stats/<int:telegram_id>')
-def api_user_stats(telegram_id):
-    week_ago = datetime.now() - timedelta(days=7)
-    daily = execute_query('''SELECT date, searches, downloads, likes_added, listening_time
-                             FROM user_daily_stats 
-                             WHERE chat_id = ? AND date > ? 
-                             ORDER BY date DESC''', (telegram_id, week_ago.date()), fetch_all=True) or []
-    
-    actions = execute_query('''SELECT action_type, action_data, created_at
-                               FROM user_actions 
-                               WHERE chat_id = ? 
-                               ORDER BY created_at DESC LIMIT 20''', (telegram_id,), fetch_all=True) or []
-    
-    return jsonify({
-        'daily_stats': [{'date': d[0], 'searches': d[1], 'downloads': d[2], 'likes': d[3], 'listening': d[4]} for d in daily],
-        'recent_actions': [{'type': a[0], 'data': json.loads(a[1]) if a[1] else None, 'time': a[2]} for a in actions]
-    })
-
 @web_app.route('/search')
 def api_search():
     query = request.args.get('q', '')
@@ -432,19 +452,25 @@ def api_download():
         pass
     return jsonify({'error': 'Download failed'})
 
-@web_app.route('/api/top_users')
-def api_top_users():
+@web_app.route('/api/stats/geo')
+def api_geo_stats():
+    """Статистика по геолокации (только админ)"""
     admin_key = request.headers.get('X-Admin-Key', '')
     if admin_key != hashlib.md5(ADMIN_USERNAME.encode()).hexdigest():
         return jsonify({'error': 'Unauthorized'}), 401
     
-    top = execute_query('''SELECT chat_id, username, first_name, total_requests, total_downloads, total_likes, last_ip, device_type
-                           FROM users ORDER BY total_requests DESC LIMIT 20''', fetch_all=True) or []
-    return jsonify([{
-        'chat_id': t[0], 'username': t[1], 'name': t[2],
-        'requests': t[3], 'downloads': t[4], 'likes': t[5],
-        'last_ip': t[6], 'device': t[7]
-    } for t in top])
+    by_country = execute_query('''SELECT country, COUNT(*) as cnt FROM users 
+                                   WHERE country IS NOT NULL GROUP BY country ORDER BY cnt DESC''', fetch_all=True) or []
+    by_device = execute_query('''SELECT device_type, COUNT(*) as cnt FROM users 
+                                  WHERE device_type IS NOT NULL GROUP BY device_type''', fetch_all=True) or []
+    by_os = execute_query('''SELECT os_name, COUNT(*) as cnt FROM users 
+                              WHERE os_name IS NOT NULL GROUP BY os_name''', fetch_all=True) or []
+    
+    return jsonify({
+        'by_country': [{'country': c[0], 'count': c[1]} for c in by_country],
+        'by_device': [{'device': d[0], 'count': d[1]} for d in by_device],
+        'by_os': [{'os': o[0], 'count': o[1]} for o in by_os]
+    })
 
 # ==================== ТЕЛЕГРАМ КОМАНДЫ ====================
 async def is_admin(update: Update) -> bool:
@@ -464,7 +490,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✨ *Возможности:*\n"
         "• Поиск на SoundCloud\n"
         "• Лайки и плейлисты\n"
-        "• Веб-приложение (открывается по кнопке ниже)\n\n"
+        "• Веб-приложение\n\n"
         "🔗 *Открой Mini App* для полного функционала!",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup([[
@@ -490,10 +516,10 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👤 *Имя:* {user_info.get('first_name', '?')} {user_info.get('last_name', '')}
 🔖 *Username:* @{user_info.get('username', 'нет')}
-🌐 *Язык:* {user_info.get('language_code', '?')}
-💎 *Premium:* {'Да' if user_info.get('is_premium') else 'Нет'}
-🌍 *Последний IP:* `{user_info.get('last_ip', 'неизвестен')}`
+🌍 *Страна:* {user_info.get('country', 'неизвестно')}
+🏙️ *Город:* {user_info.get('city', 'неизвестно')}
 📱 *Устройство:* {user_info.get('device_type', '?')} / {user_info.get('os_name', '?')}
+💻 *Браузер:* {user_info.get('browser_name', '?')}
 
 📈 *Активность:*
 • Запросов: {user_info.get('total_requests', 0)}
@@ -503,8 +529,6 @@ async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📅 *В боте с:* {user_info.get('registered_at', '?')[:16] if user_info.get('registered_at') else '?'}
 🕐 *Последний визит:* {user_info.get('last_active', '?')[:16] if user_info.get('last_active') else '?'}
-
-⚙️ *Качество:* {user_info.get('quality', '192')} kbps
     """
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -519,19 +543,17 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_likes = execute_query("SELECT COUNT(*) FROM user_likes", fetch_one=True)[0]
     total_playlists = execute_query("SELECT COUNT(*) FROM playlists", fetch_one=True)[0]
     
-    today = datetime.now().date()
-    active_today = execute_query("SELECT COUNT(DISTINCT chat_id) FROM user_daily_stats WHERE date = ?", (today,), fetch_one=True)[0]
-    premium_users = execute_query("SELECT COUNT(*) FROM users WHERE is_premium = 1", fetch_one=True)[0]
+    # Геостатистика
+    countries = execute_query("SELECT COUNT(DISTINCT country) FROM users WHERE country IS NOT NULL", fetch_one=True)[0]
     
-    # Статистика по IP (уникальные)
-    unique_ips = execute_query("SELECT COUNT(DISTINCT last_ip) FROM users WHERE last_ip IS NOT NULL AND last_ip != ''", fetch_one=True)[0]
+    # Устройства
+    devices = execute_query("SELECT COUNT(DISTINCT device_type) FROM users WHERE device_type IS NOT NULL", fetch_one=True)[0]
     
     await update.message.reply_text(
         f"📊 *Общая статистика*\n\n"
-        f"👥 *Всего пользователей:* {total_users}\n"
-        f"💎 *Premium:* {premium_users}\n"
-        f"📈 *Активных сегодня:* {active_today}\n"
-        f"🌍 *Уникальных IP:* {unique_ips}\n\n"
+        f"👥 *Пользователей:* {total_users}\n"
+        f"🌍 *Стран:* {countries}\n"
+        f"📱 *Типов устройств:* {devices}\n\n"
         f"🔍 *Поисков:* {total_requests}\n"
         f"🎵 *Скачиваний:* {total_downloads}\n"
         f"❤️ *Лайков:* {total_likes}\n"
@@ -558,7 +580,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     update_user_stats(update.effective_user.id, 'total_requests')
-    update_daily_stats(update.effective_user.id, searches=1)
     log_action(update.effective_user.id, 'search', {'query': query})
     
     await update.message.reply_text(f"🔍 Ищу: {query}\n(функция поиска MP3 в разработке)")
@@ -568,7 +589,7 @@ def run_web():
     web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False, use_reloader=False)
 
 def main():
-    print("🚀 Запуск бота с IP-логированием...")
+    print("🚀 Запуск бота со сбором данных...")
     threading.Thread(target=run_web, daemon=True).start()
     init_db()
     
@@ -581,7 +602,7 @@ def main():
     
     print("✅ Бот запущен!")
     print(f"Админ: @{ADMIN_USERNAME}")
-    print("📡 IP-логирование: при открытии Mini App")
+    print("📊 Собираем: геолокацию, технические данные, данные Mini App")
     app.run_polling()
 
 if __name__ == "__main__":
