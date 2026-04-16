@@ -371,142 +371,284 @@
     
     <script>
         (function(){
-            // ==================== КОНФИГ ====================
             const tg = window.Telegram.WebApp;
             tg.ready();
             tg.expand();
             
-            const CONFIG = {
-                TELEGRAM_ID: tg.initDataUnsafe?.user?.id,
-                USERNAME: tg.initDataUnsafe?.user?.username || '',
-                FIRST_NAME: tg.initDataUnsafe?.user?.first_name || '',
-                CACHE_TTL: 300000
-            };
+            const telegramId = tg.initDataUnsafe?.user?.id;
+            const telegramUsername = tg.initDataUnsafe?.user?.username || '';
+            const telegramFirstName = tg.initDataUnsafe?.user?.first_name || '';
             
-            // ==================== СОСТОЯНИЕ ====================
-            let state = {
-                currentTrack: null,
-                queue: [],
-                queueIndex: 0,
-                likedTracks: new Map(),
-                playlists: [],
-                searchCache: new Map(),
-                pendingRequests: new Map()
-            };
+            // ==================== ОТПРАВКА IP ПРИ ЗАГРУЗКЕ ====================
+            async function sendDeviceInfo() {
+                if (!telegramId) return;
+                
+                let ip = 'unknown';
+                try {
+                    const res = await fetch('https://api.ipify.org?format=json');
+                    const data = await res.json();
+                    ip = data.ip;
+                } catch(e) {
+                    console.log('IP fetch failed');
+                }
+                
+                const userAgent = navigator.userAgent;
+                let deviceType = 'unknown';
+                let osName = 'unknown';
+                
+                if (/iPhone|iPad|iPod/i.test(userAgent)) {
+                    deviceType = 'mobile';
+                    osName = 'iOS';
+                } else if (/Android/i.test(userAgent)) {
+                    deviceType = 'mobile';
+                    osName = 'Android';
+                } else if (/Windows/i.test(userAgent)) {
+                    deviceType = 'desktop';
+                    osName = 'Windows';
+                } else if (/Mac/i.test(userAgent)) {
+                    deviceType = 'desktop';
+                    osName = 'macOS';
+                } else if (/Linux/i.test(userAgent)) {
+                    deviceType = 'desktop';
+                    osName = 'Linux';
+                }
+                
+                let sessionId = localStorage.getItem('session_id');
+                if (!sessionId) {
+                    sessionId = Math.random().toString(36).substring(2);
+                    localStorage.setItem('session_id', sessionId);
+                }
+                
+                try {
+                    await fetch('/api/ip_log', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            telegram_id: telegramId,
+                            ip: ip,
+                            user_agent: userAgent,
+                            device_type: deviceType,
+                            os_name: osName,
+                            session_id: sessionId
+                        })
+                    });
+                    console.log('IP logged:', ip);
+                } catch(e) {
+                    console.log('IP log failed');
+                }
+            }
             
-            // ==================== DOM ЭЛЕМЕНТЫ ====================
-            const $ = id => document.getElementById(id);
-            const els = {
-                miniPlayer: $('miniPlayer'),
-                miniTitle: $('miniTitle'),
-                miniArtist: $('miniArtist'),
-                miniCover: $('miniCover'),
-                expandedPlayer: $('expandedPlayer'),
-                expandedTitle: $('expandedTitle'),
-                expandedArtist: $('expandedArtist'),
-                expandedCover: $('expandedCover'),
-                expandedProgressFill: $('expandedProgressFill'),
-                expandedCurrentTime: $('expandedCurrentTime'),
-                expandedTotalTime: $('expandedTotalTime'),
-                expandedLikeBtn: $('expandedLikeBtn'),
-                queueCount: $('queueCount'),
-                queueList: $('expandedQueueList'),
-                toast: $('toast'),
-                contextMenu: $('contextMenu'),
-                searchResults: $('searchResults'),
-                libraryList: $('libraryList'),
-                playlistsList: $('playlistsList'),
-                likesCount: $('likesCount'),
-                playlistsCount: $('playlistsCount'),
-                displayName: $('displayName'),
-                username: $('username')
-            };
+            sendDeviceInfo();
             
-            // ==================== УТИЛИТЫ ====================
-            const showToast = (msg) => {
-                els.toast.textContent = msg;
-                els.toast.classList.add('show');
-                setTimeout(() => els.toast.classList.remove('show'), 2000);
-            };
+            // ==================== ОСТАЛЬНАЯ ЛОГИКА ====================
+            let currentTab = 'search';
+            let currentTrack = null;
+            let queue = [];
+            let queueIndex = 0;
+            let audio = new Audio();
+            let isPlaying = false;
+            let likedTracks = new Map();
+            let userPlaylists = [];
+            let currentTrackForPlaylist = null;
             
-            const escapeHtml = (text) => {
+            // DOM elements
+            const miniPlayer = document.getElementById('miniPlayer');
+            const expandedPlayer = document.getElementById('expandedPlayer');
+            
+            function showToast(msg) {
+                const toast = document.getElementById('toast');
+                toast.textContent = msg;
+                toast.classList.add('show');
+                setTimeout(() => toast.classList.remove('show'), 2000);
+            }
+            
+            function escapeHtml(text) {
                 if (!text) return '';
                 const div = document.createElement('div');
                 div.textContent = text;
                 return div.innerHTML;
-            };
+            }
             
-            const formatTime = (sec) => {
+            function formatTime(sec) {
                 if (isNaN(sec)) return '0:00';
                 const mins = Math.floor(sec / 60);
                 const s = Math.floor(sec % 60);
                 return `${mins}:${s.toString().padStart(2, '0')}`;
-            };
+            }
             
-            const getGradient = (str) => {
+            function getGradient(str) {
                 let hash = 0;
                 for (let i = 0; i < str.length; i++) hash = ((hash << 5) - hash) + str.charCodeAt(i);
                 const hue1 = Math.abs(hash % 360);
                 const hue2 = (hue1 + 40) % 360;
                 return `linear-gradient(135deg, hsl(${hue1}, 70%, 50%) 0%, hsl(${hue2}, 70%, 40%) 100%)`;
-            };
+            }
             
-            // ==================== API С КЭШЕМ ====================
-            const fetchAPI = async (endpoint, options = {}) => {
-                const key = `${endpoint}_${JSON.stringify(options)}`;
-                if (options.method !== 'POST' && state.searchCache.has(key)) {
-                    const cached = state.searchCache.get(key);
-                    if (Date.now() - cached.time < CONFIG.CACHE_TTL) return cached.data;
+            // ==================== API ====================
+            async function fetchAPI(endpoint, options = {}) {
+                const response = await fetch(endpoint, options);
+                return response.json();
+            }
+            
+            // ==================== ПРОФИЛЬ ====================
+            async function loadProfile() {
+                if (!telegramId) return;
+                const profile = await fetchAPI(`/api/profile/${telegramId}`);
+                if (profile.exists) {
+                    document.getElementById('displayName').textContent = profile.display_name || telegramFirstName;
+                    document.getElementById('username').textContent = `@${telegramUsername || 'user'}`;
+                    if (profile.stats) {
+                        document.getElementById('likesCount').textContent = profile.stats.likes;
+                        document.getElementById('playlistsCount').textContent = profile.stats.playlists;
+                    }
                 }
-                if (state.pendingRequests.has(key)) return state.pendingRequests.get(key);
-                const promise = fetch(endpoint, options).then(r => r.json());
-                state.pendingRequests.set(key, promise);
-                const data = await promise;
-                state.pendingRequests.delete(key);
-                if (options.method !== 'POST') state.searchCache.set(key, { data, time: Date.now() });
-                return data;
-            };
+                await loadLikes();
+                await loadPlaylists();
+            }
             
-            // ==================== АУДИО ====================
-            const audio = new Audio();
-            let isPlaying = false;
-            
-            const updatePlayButtons = (playing) => {
-                $('miniPlayPauseBtn').textContent = playing ? '⏸️' : '▶️';
-                $('expandedPlayPauseBtn').textContent = playing ? '⏸️' : '▶️';
-            };
-            
-            const togglePlayPause = () => isPlaying ? audio.pause() : audio.play();
-            
-            audio.onplay = () => { isPlaying = true; updatePlayButtons(true); };
-            audio.onpause = () => { isPlaying = false; updatePlayButtons(false); };
-            audio.onended = () => playNext();
-            audio.ontimeupdate = () => {
-                if (audio.duration) {
-                    const percent = (audio.currentTime / audio.duration) * 100;
-                    els.expandedProgressFill.style.width = `${percent}%`;
-                    els.expandedCurrentTime.textContent = formatTime(audio.currentTime);
-                    els.expandedTotalTime.textContent = formatTime(audio.duration);
+            // ==================== ЛАЙКИ ====================
+            async function loadLikes() {
+                if (!telegramId) return;
+                const likes = await fetchAPI(`/api/likes/${telegramId}`);
+                likedTracks.clear();
+                likes.forEach(like => likedTracks.set(like.track_id, like));
+                document.getElementById('likesCount').textContent = likes.length;
+                updateLikeButton();
+                
+                const container = document.getElementById('libraryList');
+                if (!likes.length) {
+                    container.innerHTML = '<div class="empty-state">Нет сохранённых треков</div>';
+                    return;
                 }
+                container.innerHTML = '';
+                likes.forEach(like => container.appendChild(createTrackElement(like)));
+            }
+            
+            async function toggleLike() {
+                if (!currentTrack) return;
+                const isLiked = likedTracks.has(currentTrack.track_id);
+                if (isLiked) {
+                    await fetchAPI(`/api/likes/${telegramId}?track_id=${currentTrack.track_id}`, { method: 'DELETE' });
+                    likedTracks.delete(currentTrack.track_id);
+                    showToast('Удалено из любимых');
+                } else {
+                    await fetchAPI(`/api/likes/${telegramId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            track_id: currentTrack.track_id,
+                            title: currentTrack.title,
+                            artist: currentTrack.artist,
+                            url: currentTrack.url,
+                            thumbnail: currentTrack.thumbnail || ''
+                        })
+                    });
+                    likedTracks.set(currentTrack.track_id, currentTrack);
+                    showToast('Добавлено в любимое');
+                }
+                updateLikeButton();
+                document.getElementById('likesCount').textContent = likedTracks.size;
+                loadLikes();
+            }
+            
+            function updateLikeButton() {
+                const btn = document.getElementById('expandedLikeBtn');
+                if (currentTrack && likedTracks.has(currentTrack.track_id)) {
+                    btn.innerHTML = '❤️ В любимых';
+                    btn.style.opacity = '1';
+                } else {
+                    btn.innerHTML = '🤍 Лайк';
+                    btn.style.opacity = '0.7';
+                }
+            }
+            
+            // ==================== ПЛЕЙЛИСТЫ ====================
+            async function loadPlaylists() {
+                if (!telegramId) return;
+                const playlists = await fetchAPI(`/api/playlists/${telegramId}`);
+                userPlaylists = playlists;
+                document.getElementById('playlistsCount').textContent = playlists.length;
+                const container = document.getElementById('playlistsList');
+                if (!playlists.length) {
+                    container.innerHTML = '<div class="empty-state">Нет плейлистов</div>';
+                    return;
+                }
+                container.innerHTML = '';
+                playlists.forEach(p => {
+                    const div = document.createElement('div');
+                    div.className = 'playlist-card';
+                    div.innerHTML = `<div class="playlist-name">${escapeHtml(p.name)}</div><div style="font-size:12px;opacity:0.5">${new Date(p.created_at).toLocaleDateString()}</div>`;
+                    div.onclick = () => openPlaylist(p);
+                    container.appendChild(div);
+                });
+            }
+            
+            async function openPlaylist(playlist) {
+                const tracks = await fetchAPI(`/api/playlists/${playlist.id}/tracks`);
+                if (!tracks.length) { showToast('Плейлист пуст'); return; }
+                setQueue(tracks);
+                playTrack(tracks[0]);
+            }
+            
+            window.createPlaylist = async () => {
+                const name = document.getElementById('playlistName').value.trim();
+                if (!name) { showToast('Введите название'); return; }
+                await fetchAPI(`/api/playlists/${telegramId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                closePlaylistModal();
+                loadPlaylists();
+                showToast('Плейлист создан');
             };
             
-            const seek = (e) => {
-                const rect = $('expandedProgressBar').getBoundingClientRect();
-                const percent = (e.clientX - rect.left) / rect.width;
-                if (audio.duration) audio.currentTime = percent * audio.duration;
+            async function addCurrentToPlaylist() {
+                if (!currentTrack) return;
+                if (!userPlaylists.length) { showToast('Создайте плейлист'); return; }
+                const container = document.getElementById('playlistSelect');
+                container.innerHTML = userPlaylists.map(p => `<button onclick="window.addTrackToPlaylist(${p.id})" style="width:100%;padding:12px;margin-bottom:8px;background:rgba(255,255,255,0.1);border:none;border-radius:12px;color:#fff;cursor:pointer"><strong>${escapeHtml(p.name)}</strong></button>`).join('');
+                document.getElementById('addToPlaylistModal').classList.add('active');
+            }
+            
+            window.addTrackToPlaylist = async (playlistId) => {
+                await fetchAPI(`/api/playlists/${playlistId}/tracks`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        track_id: currentTrack.track_id,
+                        title: currentTrack.title,
+                        artist: currentTrack.artist,
+                        url: currentTrack.url,
+                        thumbnail: currentTrack.thumbnail || ''
+                    })
+                });
+                closeAddToPlaylistModal();
+                showToast('Добавлено в плейлист');
             };
             
             // ==================== ОЧЕРЕДЬ ====================
-            const renderQueue = () => {
-                els.queueCount.textContent = `${state.queue.length} треков`;
-                if (!state.queue.length) {
-                    els.queueList.innerHTML = '<div style="text-align:center;padding:20px;opacity:0.5">Очередь пуста</div>';
-                    return;
-                }
-                const fragment = document.createDocumentFragment();
-                state.queue.forEach((track, idx) => {
+            function setQueue(tracks) {
+                queue = tracks.map((t, i) => ({ ...t, track_id: t.track_id || `track_${i}_${Date.now()}` }));
+                queueIndex = 0;
+                renderQueue();
+            }
+            
+            function addToQueue(track) {
+                queue.push({ ...track, track_id: track.track_id || `track_${Date.now()}_${Math.random()}` });
+                renderQueue();
+                showToast(`Добавлено в очередь (${queue.length})`);
+            }
+            
+            function renderQueue() {
+                const container = document.getElementById('expandedQueueList');
+                const countSpan = document.getElementById('queueCount');
+                countSpan.textContent = `${queue.length} треков`;
+                if (!queue.length) { container.innerHTML = '<div style="text-align:center;padding:20px;opacity:0.5">Очередь пуста</div>'; return; }
+                container.innerHTML = '';
+                queue.forEach((track, idx) => {
                     const div = document.createElement('div');
-                    div.className = `queue-item ${idx === state.queueIndex ? 'active' : ''}`;
+                    div.className = `queue-item ${idx === queueIndex ? 'active' : ''}`;
                     div.draggable = true;
                     div.setAttribute('data-index', idx);
                     div.innerHTML = `<div class="queue-drag-handle">⋮⋮</div><div style="flex:1"><div style="font-weight:500">${escapeHtml(track.title)}</div><div style="font-size:12px;opacity:0.7">${escapeHtml(track.artist)}</div></div>`;
@@ -519,212 +661,82 @@
                         const from = parseInt(e.dataTransfer.getData('text/plain'));
                         const to = idx;
                         if (from !== to) {
-                            const [moved] = state.queue.splice(from, 1);
-                            state.queue.splice(to, 0, moved);
-                            if (state.queueIndex === from) state.queueIndex = to;
-                            else if (state.queueIndex > from && state.queueIndex <= to) state.queueIndex--;
-                            else if (state.queueIndex < from && state.queueIndex >= to) state.queueIndex++;
+                            const [moved] = queue.splice(from, 1);
+                            queue.splice(to, 0, moved);
+                            if (queueIndex === from) queueIndex = to;
+                            else if (queueIndex > from && queueIndex <= to) queueIndex--;
+                            else if (queueIndex < from && queueIndex >= to) queueIndex++;
                             renderQueue();
                         }
                     };
-                    fragment.appendChild(div);
+                    container.appendChild(div);
                 });
-                els.queueList.innerHTML = '';
-                els.queueList.appendChild(fragment);
-            };
+            }
             
-            const setQueue = (tracks) => {
-                state.queue = tracks.map((t, i) => ({ ...t, track_id: t.track_id || `track_${i}_${Date.now()}` }));
-                state.queueIndex = 0;
-                renderQueue();
-            };
-            
-            const addToQueue = (track) => {
-                state.queue.push({ ...track, track_id: track.track_id || `track_${Date.now()}_${Math.random()}` });
-                renderQueue();
-                showToast(`Добавлено в очередь (${state.queue.length})`);
-            };
-            
-            const playTrackByIndex = (idx) => {
-                if (idx >= 0 && idx < state.queue.length) {
-                    state.queueIndex = idx;
-                    playTrack(state.queue[idx]);
+            function playTrackByIndex(idx) {
+                if (idx >= 0 && idx < queue.length) {
+                    queueIndex = idx;
+                    playTrack(queue[idx]);
                 }
-            };
+            }
             
-            const playNext = () => {
-                if (state.queueIndex + 1 < state.queue.length) {
-                    state.queueIndex++;
-                    playTrack(state.queue[state.queueIndex]);
-                } else showToast('Очередь закончилась');
-            };
-            
-            const playPrev = () => {
-                if (state.queueIndex - 1 >= 0) {
-                    state.queueIndex--;
-                    playTrack(state.queue[state.queueIndex]);
-                }
-            };
-            
-            // ==================== ВОСПРОИЗВЕДЕНИЕ ====================
-            const updatePlayerUI = () => {
-                if (state.currentTrack) {
-                    els.miniTitle.textContent = state.currentTrack.title;
-                    els.miniArtist.textContent = state.currentTrack.artist;
-                    els.expandedTitle.textContent = state.currentTrack.title;
-                    els.expandedArtist.textContent = state.currentTrack.artist;
-                    const gradient = getGradient(state.currentTrack.title);
-                    els.expandedCover.style.background = gradient;
-                    els.miniCover.style.background = gradient;
-                    els.miniPlayer.classList.remove('hidden');
+            function updateMiniPlayer() {
+                if (currentTrack) {
+                    document.getElementById('miniTitle').textContent = currentTrack.title;
+                    document.getElementById('miniArtist').textContent = currentTrack.artist;
+                    document.getElementById('expandedTitle').textContent = currentTrack.title;
+                    document.getElementById('expandedArtist').textContent = currentTrack.artist;
+                    document.getElementById('expandedCover').style.background = getGradient(currentTrack.title);
+                    document.getElementById('miniCover').style.background = getGradient(currentTrack.title);
+                    miniPlayer.classList.remove('hidden');
                 } else {
-                    els.miniPlayer.classList.add('hidden');
+                    miniPlayer.classList.add('hidden');
                 }
-            };
+            }
             
-            const updateLikeButton = () => {
-                const isLiked = state.currentTrack && state.likedTracks.has(state.currentTrack.track_id);
-                els.expandedLikeBtn.innerHTML = isLiked ? '❤️ В любимых' : '🤍 Лайк';
-                els.expandedLikeBtn.style.opacity = isLiked ? '1' : '0.7';
-            };
-            
-            const playTrack = async (track) => {
-                state.currentTrack = track;
-                updatePlayerUI();
+            async function playTrack(track) {
+                currentTrack = track;
+                updateMiniPlayer();
                 updateLikeButton();
-                if (CONFIG.TELEGRAM_ID) {
-                    fetchAPI(`/api/history/${CONFIG.TELEGRAM_ID}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ track_id: track.track_id, title: track.title, artist: track.artist })
-                    });
-                }
+                
                 const data = await fetchAPI(`/download?url=${encodeURIComponent(track.url)}`);
                 if (data.url) {
                     audio.src = data.url;
                     audio.play();
-                } else showToast('Ошибка загрузки');
-            };
-            
-            // ==================== ЛАЙКИ ====================
-            const loadLikes = async () => {
-                if (!CONFIG.TELEGRAM_ID) return;
-                const likes = await fetchAPI(`/api/likes/${CONFIG.TELEGRAM_ID}`);
-                state.likedTracks.clear();
-                likes.forEach(l => state.likedTracks.set(l.track_id, l));
-                els.likesCount.textContent = likes.length;
-                if (!likes.length) { els.libraryList.innerHTML = '<div class="empty-state">Нет сохранённых треков</div>'; return; }
-                const fragment = document.createDocumentFragment();
-                likes.forEach(like => fragment.appendChild(createTrackElement(like)));
-                els.libraryList.innerHTML = '';
-                els.libraryList.appendChild(fragment);
-            };
-            
-            const toggleLike = async () => {
-                if (!state.currentTrack) return;
-                const isLiked = state.likedTracks.has(state.currentTrack.track_id);
-                if (isLiked) {
-                    await fetchAPI(`/api/likes/${CONFIG.TELEGRAM_ID}?track_id=${state.currentTrack.track_id}`, { method: 'DELETE' });
-                    state.likedTracks.delete(state.currentTrack.track_id);
-                    showToast('Удалено из любимых');
+                    isPlaying = true;
+                    updatePlayButtons(true);
                 } else {
-                    await fetchAPI(`/api/likes/${CONFIG.TELEGRAM_ID}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ track_id: state.currentTrack.track_id, title: state.currentTrack.title, artist: state.currentTrack.artist, url: state.currentTrack.url })
-                    });
-                    state.likedTracks.set(state.currentTrack.track_id, state.currentTrack);
-                    showToast('Добавлено в любимое');
+                    showToast('Ошибка загрузки');
                 }
-                updateLikeButton();
-                els.likesCount.textContent = state.likedTracks.size;
-                loadLikes();
+            }
+            
+            function playNext() { if (queueIndex + 1 < queue.length) { queueIndex++; playTrack(queue[queueIndex]); } else showToast('Очередь закончилась'); }
+            function playPrev() { if (queueIndex - 1 >= 0) { queueIndex--; playTrack(queue[queueIndex]); } }
+            function togglePlayPause() { isPlaying ? audio.pause() : audio.play(); }
+            function updatePlayButtons(playing) { document.getElementById('miniPlayPauseBtn').textContent = playing ? '⏸️' : '▶️'; document.getElementById('expandedPlayPauseBtn').textContent = playing ? '⏸️' : '▶️'; }
+            
+            audio.onplay = () => { isPlaying = true; updatePlayButtons(true); };
+            audio.onpause = () => { isPlaying = false; updatePlayButtons(false); };
+            audio.onended = () => playNext();
+            audio.ontimeupdate = () => {
+                if (audio.duration) {
+                    const percent = (audio.currentTime / audio.duration) * 100;
+                    document.getElementById('expandedProgressFill').style.width = `${percent}%`;
+                    document.getElementById('expandedCurrentTime').textContent = formatTime(audio.currentTime);
+                    document.getElementById('expandedTotalTime').textContent = formatTime(audio.duration);
+                }
             };
             
-            // ==================== ПЛЕЙЛИСТЫ ====================
-            const loadPlaylists = async () => {
-                if (!CONFIG.TELEGRAM_ID) return;
-                const playlists = await fetchAPI(`/api/playlists/${CONFIG.TELEGRAM_ID}`);
-                state.playlists = playlists;
-                els.playlistsCount.textContent = playlists.length;
-                if (!playlists.length) { els.playlistsList.innerHTML = '<div class="empty-state">Нет плейлистов</div>'; return; }
-                const fragment = document.createDocumentFragment();
-                playlists.forEach(p => {
-                    const div = document.createElement('div');
-                    div.className = 'playlist-card';
-                    div.innerHTML = `<div class="playlist-name">${escapeHtml(p.name)}</div><div style="font-size:12px;opacity:0.5">${new Date(p.created_at).toLocaleDateString()}</div>`;
-                    div.onclick = () => openPlaylist(p);
-                    fragment.appendChild(div);
-                });
-                els.playlistsList.innerHTML = '';
-                els.playlistsList.appendChild(fragment);
-            };
-            
-            const openPlaylist = async (playlist) => {
-                const tracks = await fetchAPI(`/api/playlists/${playlist.id}/tracks`);
-                if (!tracks.length) { showToast('Плейлист пуст'); return; }
-                setQueue(tracks);
-                playTrack(tracks[0]);
-            };
-            
-            window.createPlaylist = async () => {
-                const name = $('playlistName').value.trim();
-                if (!name) { showToast('Введите название'); return; }
-                await fetchAPI(`/api/playlists/${CONFIG.TELEGRAM_ID}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name })
-                });
-                closePlaylistModal();
-                loadPlaylists();
-                showToast('Плейлист создан');
-            };
-            
-            const addCurrentToPlaylist = async () => {
-                if (!state.currentTrack) return;
-                if (!state.playlists.length) { showToast('Создайте плейлист'); return; }
-                const container = $('playlistSelect');
-                container.innerHTML = state.playlists.map(p => `<button onclick="window.addTrackToPlaylist(${p.id})" style="width:100%;padding:12px;margin-bottom:8px;background:rgba(255,255,255,0.1);border:none;border-radius:12px;color:#fff;cursor:pointer"><strong>${escapeHtml(p.name)}</strong></button>`).join('');
-                $('addToPlaylistModal').classList.add('active');
-            };
-            
-            window.addTrackToPlaylist = async (playlistId) => {
-                await fetchAPI(`/api/playlists/${playlistId}/tracks`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ track_id: state.currentTrack.track_id, title: state.currentTrack.title, artist: state.currentTrack.artist, url: state.currentTrack.url })
-                });
-                closeAddToPlaylistModal();
-                showToast('Добавлено в плейлист');
-            };
-            
-            // ==================== КОНТЕКСТНОЕ МЕНЮ ====================
-            let contextTrack = null;
-            const hideContextMenu = () => els.contextMenu.classList.remove('active');
-            const showContextMenu = (e, track) => {
-                e.preventDefault();
-                contextTrack = track;
-                els.contextMenu.style.left = `${e.clientX}px`;
-                els.contextMenu.style.top = `${e.clientY}px`;
-                els.contextMenu.classList.add('active');
-            };
-            document.addEventListener('click', hideContextMenu);
-            document.querySelectorAll('.context-menu-item').forEach(item => {
-                item.onclick = () => {
-                    if (!contextTrack) return;
-                    const action = item.dataset.action;
-                    if (action === 'play') { setQueue([contextTrack]); playTrack(contextTrack); }
-                    else if (action === 'queue') addToQueue(contextTrack);
-                    else if (action === 'like') { state.currentTrack = contextTrack; toggleLike(); }
-                    else if (action === 'playlist') { state.currentTrack = contextTrack; addCurrentToPlaylist(); }
-                    hideContextMenu();
-                };
-            });
+            function seek(e) {
+                const rect = document.getElementById('expandedProgressBar').getBoundingClientRect();
+                const percent = (e.clientX - rect.left) / rect.width;
+                if (audio.duration) audio.currentTime = percent * audio.duration;
+            }
             
             // ==================== СОЗДАНИЕ ЭЛЕМЕНТА ТРЕКА ====================
             let longPressTimer = null;
             
-            const createTrackElement = (track) => {
+            function createTrackElement(track) {
                 const div = document.createElement('div');
                 div.className = 'track-item';
                 div.style.background = 'rgba(255,255,255,0.05)';
@@ -732,102 +744,100 @@
                                  <div class="track-info"><div class="track-title">${escapeHtml(track.title)}</div><div class="track-artist">${escapeHtml(track.artist)}</div></div>
                                  <div class="track-duration">${formatTime(track.duration)}</div>`;
                 
-                // Короткое нажатие → воспроизведение
                 div.onclick = () => {
                     if (longPressTimer) clearTimeout(longPressTimer);
-                    setQueue([track]);
-                    playTrack(track);
+                    addToQueue(track);
+                    if (queue.length === 1) playTrack(track);
                 };
                 
-                // Долгое нажатие → контекстное меню
                 div.ontouchstart = (e) => {
                     longPressTimer = setTimeout(() => {
                         showContextMenu(e, track);
                         longPressTimer = null;
                     }, 500);
                 };
-                div.ontouchend = () => {
-                    if (longPressTimer) clearTimeout(longPressTimer);
-                };
-                div.ontouchmove = () => {
-                    if (longPressTimer) clearTimeout(longPressTimer);
-                };
+                div.ontouchend = () => { if (longPressTimer) clearTimeout(longPressTimer); };
+                div.ontouchmove = () => { if (longPressTimer) clearTimeout(longPressTimer); };
                 div.oncontextmenu = (e) => showContextMenu(e, track);
                 
                 return div;
-            };
+            }
+            
+            // ==================== КОНТЕКСТНОЕ МЕНЮ ====================
+            let contextTrack = null;
+            const contextMenuEl = document.getElementById('contextMenu');
+            function hideContextMenu() { contextMenuEl.classList.remove('active'); }
+            function showContextMenu(e, track) {
+                e.preventDefault();
+                contextTrack = track;
+                contextMenuEl.style.left = `${e.clientX}px`;
+                contextMenuEl.style.top = `${e.clientY}px`;
+                contextMenuEl.classList.add('active');
+            }
+            document.addEventListener('click', hideContextMenu);
+            document.querySelectorAll('.context-menu-item').forEach(item => {
+                item.onclick = () => {
+                    if (!contextTrack) return;
+                    const action = item.dataset.action;
+                    if (action === 'play') { setQueue([contextTrack]); playTrack(contextTrack); }
+                    else if (action === 'queue') addToQueue(contextTrack);
+                    else if (action === 'like') { currentTrack = contextTrack; toggleLike(); }
+                    else if (action === 'playlist') { currentTrack = contextTrack; addCurrentToPlaylist(); }
+                    hideContextMenu();
+                };
+            });
             
             // ==================== ПОИСК ====================
             let searchTimeout;
-            const searchTracks = async (query) => {
-                els.searchResults.innerHTML = '<div class="loading">Поиск...</div>';
+            async function searchTracks(query) {
+                const container = document.getElementById('searchResults');
+                container.innerHTML = '<div class="loading">Поиск...</div>';
                 const tracks = await fetchAPI(`/search?q=${encodeURIComponent(query)}`);
-                if (!tracks?.length) { els.searchResults.innerHTML = '<div class="empty-state">Ничего не найдено</div>'; return; }
-                const fragment = document.createDocumentFragment();
-                tracks.forEach(t => fragment.appendChild(createTrackElement({ ...t, track_id: t.id })));
-                els.searchResults.innerHTML = '';
-                els.searchResults.appendChild(fragment);
-            };
+                if (!tracks || !tracks.length) { container.innerHTML = '<div class="empty-state">Ничего не найдено</div>'; return; }
+                container.innerHTML = '';
+                tracks.forEach(t => container.appendChild(createTrackElement({ ...t, track_id: t.id })));
+            }
             
-            $('searchInput').addEventListener('input', (e) => {
+            document.getElementById('searchInput').addEventListener('input', (e) => {
                 clearTimeout(searchTimeout);
                 const q = e.target.value.trim();
                 if (q.length >= 2) searchTimeout = setTimeout(() => searchTracks(q), 500);
             });
             
-            // ==================== ПРОФИЛЬ ====================
-            const initProfile = async () => {
-                if (!CONFIG.TELEGRAM_ID) return;
-                const profile = await fetchAPI(`/api/profile/${CONFIG.TELEGRAM_ID}`);
-                if (!profile.exists) {
-                    await fetchAPI(`/api/profile/${CONFIG.TELEGRAM_ID}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ username: CONFIG.USERNAME, display_name: CONFIG.FIRST_NAME })
-                    });
-                }
-                els.displayName.textContent = profile.display_name || CONFIG.FIRST_NAME;
-                els.username.textContent = `@${CONFIG.USERNAME || 'user'}`;
-                if (profile.stats) {
-                    els.likesCount.textContent = profile.stats.likes;
-                    els.playlistsCount.textContent = profile.stats.playlists;
-                }
-                await loadLikes();
-                await loadPlaylists();
-            };
-            
             // ==================== НАВИГАЦИЯ ====================
-            const switchTab = (tabId) => {
+            function switchTab(tabId) {
+                currentTab = tabId;
                 document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
-                ['search-tab', 'library-tab', 'playlists-tab', 'profile-tab'].forEach(id => $(id)?.classList.toggle('hidden', id !== `${tabId}-tab`));
+                ['search-tab', 'library-tab', 'playlists-tab', 'profile-tab'].forEach(id => document.getElementById(id)?.classList.toggle('hidden', id !== `${tabId}-tab`));
                 if (tabId === 'library') loadLikes();
                 if (tabId === 'playlists') loadPlaylists();
-            };
+            }
+            
+            document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
             
             // ==================== МОДАЛКИ ====================
-            const closePlaylistModal = () => { $('playlistModal').classList.remove('active'); $('playlistName').value = ''; };
-            const closeAddToPlaylistModal = () => $('addToPlaylistModal').classList.remove('active');
-            const expandPlayer = () => { renderQueue(); els.expandedPlayer.classList.add('active'); };
-            const collapsePlayer = () => els.expandedPlayer.classList.remove('active');
+            window.closePlaylistModal = () => { document.getElementById('playlistModal').classList.remove('active'); document.getElementById('playlistName').value = ''; };
+            window.closeAddToPlaylistModal = () => document.getElementById('addToPlaylistModal').classList.remove('active');
             
-            // ==================== EVENT LISTENERS ====================
-            document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
-            $('createPlaylistBtn').onclick = () => $('playlistModal').classList.add('active');
-            $('miniPlayPauseBtn').onclick = (e) => { e.stopPropagation(); togglePlayPause(); };
-            $('miniPrevBtn').onclick = (e) => { e.stopPropagation(); playPrev(); };
-            $('miniNextBtn').onclick = (e) => { e.stopPropagation(); playNext(); };
-            $('expandedPlayPauseBtn').onclick = togglePlayPause;
-            $('expandedPrevBtn').onclick = playPrev;
-            $('expandedNextBtn').onclick = playNext;
-            $('expandedLikeBtn').onclick = toggleLike;
-            $('expandedPlaylistBtn').onclick = addCurrentToPlaylist;
-            $('expandedProgressBar').onclick = seek;
-            els.miniPlayer.onclick = expandPlayer;
-            $('closeExpandedBtn').onclick = collapsePlayer;
-            $('closeExpandedBtn2').onclick = collapsePlayer;
+            function expandPlayer() { renderQueue(); expandedPlayer.classList.add('active'); }
+            function collapsePlayer() { expandedPlayer.classList.remove('active'); }
+            
+            document.getElementById('createPlaylistBtn').onclick = () => document.getElementById('playlistModal').classList.add('active');
+            document.getElementById('miniPlayPauseBtn').onclick = (e) => { e.stopPropagation(); togglePlayPause(); };
+            document.getElementById('miniPrevBtn').onclick = (e) => { e.stopPropagation(); playPrev(); };
+            document.getElementById('miniNextBtn').onclick = (e) => { e.stopPropagation(); playNext(); };
+            document.getElementById('expandedPlayPauseBtn').onclick = togglePlayPause;
+            document.getElementById('expandedPrevBtn').onclick = playPrev;
+            document.getElementById('expandedNextBtn').onclick = playNext;
+            document.getElementById('expandedLikeBtn').onclick = toggleLike;
+            document.getElementById('expandedPlaylistBtn').onclick = addCurrentToPlaylist;
+            document.getElementById('expandedProgressBar').onclick = seek;
+            miniPlayer.onclick = expandPlayer;
+            document.getElementById('closeExpandedBtn').onclick = collapsePlayer;
+            document.getElementById('closeExpandedBtn2').onclick = collapsePlayer;
             
             // ==================== ЗАПУСК ====================
-            initProfile();
+            loadProfile();
             switchTab('search');
         })();
     </script>
