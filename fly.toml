@@ -1,0 +1,22 @@
+app = "telegram-music-bot"
+primary_region = "ams"  # Амстердам (ближе к РФ)
+
+[build]
+  image = "flyio/python:3.11"
+
+[env]
+  BOT_TOKEN = "8410866218:AAFwRJj2RbRuEAMJayfAYnpAOMMdEKdpA_A"
+  ADMIN_USERNAME = "okey2010"
+  ADMIN_CHAT_ID = "7889817936"
+  APP_URL = "https://telegram-music-bot.fly.dev"
+
+[http_service]
+  internal_port = 10000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"  # 1 CPU, 256MB RAM — быстрее чем Render
+  memory = "512"
