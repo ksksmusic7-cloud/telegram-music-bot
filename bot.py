@@ -1,8 +1,7 @@
 import os
 import sqlite3
-import json
 from datetime import datetime, timedelta
-from typing import List, Tuple, Dict, Optional
+from typing import Dict, Optional
 
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,13 +11,12 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-# ===== НАСТРОЙКИ =====
-TOKEN = os.environ.get("8410866218:AAFwRJj2RbRuEAMJayfAYnpAOMMdEKdpA_A")
-PROXY_URL = os.environ.get("PROXY_URL", "socks5://185.217.198.141:1080")
+# ===== ТОКЕН ПРЯМО В КОДЕ (ВРЕМЕННО) =====
+TOKEN = "8410866218:AAFwRJj2RbRuEAMJayfAYnpAOMMdEKdpA_A"
+# =========================================
 
-# АДМИН (твой юзернейм без @)
-ADMIN_USERNAME = os.environ.get("okey2010", "").lower().replace("@", "")
-# ====================
+PROXY_URL = "socks5://185.217.198.141:1080"
+ADMIN_USERNAME = "okey2010"
 
 # ===== ПРОВЕРКА АДМИНА =====
 async def is_admin(update: Update) -> bool:
@@ -31,8 +29,6 @@ async def is_admin(update: Update) -> bool:
 def init_db():
     conn = sqlite3.connect('music_bot.db')
     c = conn.cursor()
-    
-    # Пользователи
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (chat_id INTEGER PRIMARY KEY,
                   username TEXT,
@@ -42,15 +38,12 @@ def init_db():
                   last_active TIMESTAMP,
                   total_requests INTEGER DEFAULT 0,
                   total_downloads INTEGER DEFAULT 0)''')
-    
-    # История поиска
     c.execute('''CREATE TABLE IF NOT EXISTS search_history
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   chat_id INTEGER,
                   query TEXT,
                   timestamp TIMESTAMP,
                   success BOOLEAN)''')
-    
     conn.commit()
     conn.close()
 
@@ -190,7 +183,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /stats - статистика (только для админа)
 
 📌 *Источники:*
-Поиск идёт по SoundCloud (без блокировок и танцев с куками)
+Поиск идёт по SoundCloud
     """
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -259,7 +252,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
     
     elif query.data == 'popular':
-        # Популярные треки (из БД)
         conn = sqlite3.connect('music_bot.db')
         c = conn.cursor()
         c.execute('''SELECT query, COUNT(*) as cnt 
@@ -283,30 +275,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query_text = update.message.text.strip()
     chat_id = update.message.chat_id
-    user = update.effective_user
     
     if not query_text:
         return
     
-    # Обновляем активность
     update_activity(chat_id, is_download=False)
-    
     msg = await update.message.reply_text(f"🔍 Ищу: *{query_text}*", parse_mode='Markdown')
-    
     audio_path = await download_audio(query_text, chat_id)
     
     if audio_path and os.path.exists(audio_path):
-        # Отправляем в Telegram Music
         with open(audio_path, 'rb') as f:
-            await update.message.reply_audio(
-                audio=f,
-                title=query_text[:60],
-                performer="SoundCloud"
-            )
+            await update.message.reply_audio(audio=f, title=query_text[:60], performer="SoundCloud")
         os.remove(audio_path)
         await msg.delete()
-        
-        # Сохраняем успешный поиск
         save_search(chat_id, query_text, success=True)
         update_activity(chat_id, is_download=True)
     else:
@@ -315,33 +296,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== ЗАПУСК =====
 def main():
-    if not TOKEN:
-        print("❌ Ошибка: BOT_TOKEN не задан!")
-        return
+    print("🚀 Запуск бота...")
+    print(f"Токен: {TOKEN[:10]}... (скрыто)")
     
-    # Инициализируем БД
     init_db()
-    
-    # Настройка прокси
     request = HTTPXRequest(proxy=PROXY_URL, connect_timeout=30, read_timeout=30)
-    
     app = Application.builder().token(TOKEN).request(request).build()
     
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats_command))
-    
-    # Кнопки
     app.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Сообщения
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ Бот запущен!")
     print(f"Прокси: {PROXY_URL}")
-    print(f"Админ: @{ADMIN_USERNAME}" if ADMIN_USERNAME else "Админ не задан")
-    
+    print(f"Админ: @{ADMIN_USERNAME}")
     app.run_polling()
 
 if __name__ == "__main__":
