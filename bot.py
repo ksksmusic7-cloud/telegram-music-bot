@@ -9,7 +9,7 @@ from collections import deque
 import json
 
 import yt_dlp
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -37,6 +37,65 @@ web_app = Flask(__name__)
 @web_app.route('/')
 def serve_index():
     return send_from_directory('.', 'index.html')
+
+@web_app.route('/search')
+def search():
+    """API для поиска треков из Mini App"""
+    query = request.args.get('q', '')
+    if not query:
+        return json.dumps([])
+    
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': True,
+        'default_search': 'scsearch',
+        'playlistend': 10,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"scsearch10:{query}", download=False)
+            results = []
+            if info and 'entries' in info:
+                for entry in info['entries'][:10]:
+                    if entry:
+                        results.append({
+                            'title': entry.get('title', 'Без названия')[:60],
+                            'artist': entry.get('uploader', 'SoundCloud'),
+                            'duration': entry.get('duration', 0),
+                            'url': entry.get('webpage_url', ''),
+                            'thumbnail': entry.get('thumbnail', '')
+                        })
+            return json.dumps(results)
+    except Exception as e:
+        print(f"API ошибка: {e}")
+        return json.dumps([])
+
+@web_app.route('/download')
+def download():
+    """API для получения ссылки на скачивание"""
+    url = request.args.get('url', '')
+    if not url:
+        return json.dumps({'error': 'No URL'})
+    
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'format': 'bestaudio/best',
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info:
+                # Ищем лучший аудиоформат
+                for f in info.get('formats', []):
+                    if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                        return json.dumps({'url': f.get('url'), 'title': info.get('title', '')})
+                if info.get('url'):
+                    return json.dumps({'url': info.get('url'), 'title': info.get('title', '')})
+    except Exception as e:
+        print(f"Download API ошибка: {e}")
+    return json.dumps({'error': 'Download failed'})
 
 def run_web():
     port = int(os.environ.get('PORT', 10000))
@@ -525,47 +584,22 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             print(f"WebApp ошибка: {e}")
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Инлайн-режим: показываем кнопку-заглушку, бот ищет после отправки"""
     query_text = update.inline_query.query.strip()
     
     if not query_text:
         await update.inline_query.answer([], cache_time=0)
         return
     
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': True,
-        'default_search': 'scsearch',
-    }
+    # Заглушка — один результат, который отправит текст в чат
+    result = InlineQueryResultArticle(
+        id="1",
+        title=f"🔍 Найти: {query_text[:50]}",
+        description="Нажми, чтобы бот начал поиск на SoundCloud/YouTube",
+        input_message_content=InputTextMessageContent(query_text)
+    )
     
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"scsearch5:{query_text}", download=False)
-            results = []
-            
-            if info and 'entries' in info:
-                for i, entry in enumerate(info['entries'][:5]):
-                    if entry:
-                        title = entry.get('title', 'Без названия')
-                        uploader = entry.get('uploader', 'SoundCloud')
-                        duration = entry.get('duration', 0)
-                        url = entry.get('webpage_url', '')
-                        
-                        duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else "?"
-                        
-                        result = InlineQueryResultArticle(
-                            id=str(i),
-                            title=title[:60],
-                            description=f"{uploader} • {duration_str}",
-                            input_message_content=InputTextMessageContent(url),
-                            thumbnail_url=entry.get('thumbnail', '')
-                        )
-                        results.append(result)
-            
-            await update.inline_query.answer(results, cache_time=30)
-    except Exception as e:
-        print(f"Инлайн-ошибка: {e}")
-        await update.inline_query.answer([], cache_time=0)
+    await update.inline_query.answer([result], cache_time=0)
 
 # ===== ЗАПУСК =====
 application = None
