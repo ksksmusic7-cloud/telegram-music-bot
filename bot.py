@@ -9,7 +9,7 @@ from collections import deque
 import json
 
 import yt_dlp
-from flask import Flask, send_from_directory, request
+from flask import Flask, send_from_directory, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -34,16 +34,16 @@ QUALITIES = {
 # Веб-сервер для Mini App
 web_app = Flask(__name__)
 
+# ===== API ДЛЯ MINI APP =====
 @web_app.route('/')
 def serve_index():
     return send_from_directory('.', 'index.html')
 
 @web_app.route('/search')
 def search():
-    """API для поиска треков из Mini App"""
     query = request.args.get('q', '')
     if not query:
-        return json.dumps([])
+        return jsonify([])
     
     ydl_opts = {
         'quiet': True,
@@ -60,23 +60,23 @@ def search():
                 for entry in info['entries'][:20]:
                     if entry:
                         results.append({
+                            'id': entry.get('id', ''),
                             'title': entry.get('title', 'Без названия')[:80],
                             'artist': entry.get('uploader', 'SoundCloud'),
                             'duration': entry.get('duration', 0),
                             'url': entry.get('webpage_url', ''),
                             'thumbnail': entry.get('thumbnail', '')
                         })
-            return json.dumps(results)
+            return jsonify(results)
     except Exception as e:
         print(f"API ошибка: {e}")
-        return json.dumps([])
+        return jsonify([])
 
 @web_app.route('/download')
 def download():
-    """API для получения ссылки на скачивание"""
     url = request.args.get('url', '')
     if not url:
-        return json.dumps({'error': 'No URL'})
+        return jsonify({'error': 'No URL'})
     
     ydl_opts = {
         'quiet': True,
@@ -89,12 +89,122 @@ def download():
             if info:
                 for f in info.get('formats', []):
                     if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-                        return json.dumps({'url': f.get('url'), 'title': info.get('title', '')})
+                        return jsonify({'url': f.get('url'), 'title': info.get('title', '')})
                 if info.get('url'):
-                    return json.dumps({'url': info.get('url'), 'title': info.get('title', '')})
+                    return jsonify({'url': info.get('url'), 'title': info.get('title', '')})
     except Exception as e:
         print(f"Download API ошибка: {e}")
-    return json.dumps({'error': 'Download failed'})
+    return jsonify({'error': 'Download failed'})
+
+# ===== API ДЛЯ ПРОФИЛЯ И ЛАЙКОВ =====
+def init_app_db():
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS user_profiles
+                 (telegram_id INTEGER PRIMARY KEY,
+                  username TEXT,
+                  display_name TEXT,
+                  avatar_url TEXT,
+                  created_at TIMESTAMP)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS user_likes
+                 (telegram_id INTEGER,
+                  track_id TEXT,
+                  track_title TEXT,
+                  track_artist TEXT,
+                  track_url TEXT,
+                  track_thumbnail TEXT,
+                  liked_at TIMESTAMP,
+                  PRIMARY KEY (telegram_id, track_id))''')
+    conn.commit()
+    conn.close()
+
+@web_app.route('/api/profile/<int:telegram_id>', methods=['GET', 'POST', 'PUT'])
+def handle_profile(telegram_id):
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        c.execute("SELECT * FROM user_profiles WHERE telegram_id = ?", (telegram_id,))
+        profile = c.fetchone()
+        conn.close()
+        if profile:
+            return jsonify({
+                'telegram_id': profile[0],
+                'username': profile[1],
+                'display_name': profile[2],
+                'avatar_url': profile[3],
+                'created_at': profile[4]
+            })
+        return jsonify({'exists': False})
+    
+    elif request.method == 'POST':
+        data = request.json
+        c.execute('''INSERT OR REPLACE INTO user_profiles 
+                     (telegram_id, username, display_name, avatar_url, created_at)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (telegram_id, data.get('username', ''), data.get('display_name', ''),
+                   data.get('avatar_url', ''), datetime.now()))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    
+    elif request.method == 'PUT':
+        data = request.json
+        c.execute('''UPDATE user_profiles 
+                     SET display_name = ?, avatar_url = ?
+                     WHERE telegram_id = ?''',
+                  (data.get('display_name', ''), data.get('avatar_url', ''), telegram_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+@web_app.route('/api/likes/<int:telegram_id>', methods=['GET', 'POST', 'DELETE'])
+def handle_likes(telegram_id):
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    
+    if request.method == 'GET':
+        c.execute('''SELECT track_id, track_title, track_artist, track_url, track_thumbnail, liked_at 
+                     FROM user_likes WHERE telegram_id = ? ORDER BY liked_at DESC''', (telegram_id,))
+        likes = c.fetchall()
+        conn.close()
+        return jsonify([{
+            'track_id': l[0],
+            'title': l[1],
+            'artist': l[2],
+            'url': l[3],
+            'thumbnail': l[4],
+            'liked_at': l[5]
+        } for l in likes])
+    
+    elif request.method == 'POST':
+        data = request.json
+        c.execute('''INSERT OR REPLACE INTO user_likes 
+                     (telegram_id, track_id, track_title, track_artist, track_url, track_thumbnail, liked_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                  (telegram_id, data.get('track_id'), data.get('title'), data.get('artist'),
+                   data.get('url'), data.get('thumbnail'), datetime.now()))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    
+    elif request.method == 'DELETE':
+        track_id = request.args.get('track_id')
+        if track_id:
+            c.execute("DELETE FROM user_likes WHERE telegram_id = ? AND track_id = ?", (telegram_id, track_id))
+            conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+
+@web_app.route('/api/likes/<int:telegram_id>/check/<track_id>')
+def check_like(telegram_id, track_id):
+    conn = sqlite3.connect('music_bot.db')
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM user_likes WHERE telegram_id = ? AND track_id = ?", (telegram_id, track_id))
+    exists = c.fetchone() is not None
+    conn.close()
+    return jsonify({'liked': exists})
 
 def run_web():
     port = int(os.environ.get('PORT', 10000))
@@ -134,6 +244,7 @@ def init_db():
     
     conn.commit()
     conn.close()
+    init_app_db()
 
 def add_user(chat_id: int, username: str, first_name: str, last_name: str):
     conn = sqlite3.connect('music_bot.db')
@@ -420,7 +531,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Обложки и метаданные\n"
         "• Очередь запросов\n"
         "• Инлайн-режим (работает в любом чате)\n"
-        "• Выбор качества (128/192/320 kbps)",
+        "• Выбор качества (128/192/320 kbps)\n"
+        "• Веб-приложение с профилем и библиотекой",
         reply_markup=get_main_keyboard(),
         parse_mode='Markdown'
     )
@@ -443,6 +555,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Очередь запросов (отправляй несколько подряд)
 • Обложки и полные метаданные
 • Выбор качества через кнопку "Качество"
+• Веб-приложение с профилем и библиотекой
 
 ⚙️ *Команды:*
 /start - начать
@@ -580,14 +693,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             print(f"WebApp ошибка: {e}")
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Инлайн-режим с 20 результатами"""
     query_text = update.inline_query.query.strip()
     
     if not query_text:
         await update.inline_query.answer([], cache_time=0)
         return
     
-    # Быстрый поиск через yt-dlp
     def search_sync():
         ydl_opts = {
             'quiet': True,
@@ -614,7 +725,6 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Инлайн поиск ошибка: {e}")
             return []
     
-    # Запускаем поиск в отдельном потоке с таймаутом
     try:
         import concurrent.futures
         loop = asyncio.get_event_loop()
@@ -624,7 +734,6 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Таймаут: {e}")
         results = []
     
-    # Формируем инлайн-результаты
     inline_results = []
     for i, (title, uploader, duration, url) in enumerate(results[:20]):
         duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else "?"
@@ -633,11 +742,9 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title=title,
             description=f"{uploader} • {duration_str}",
             input_message_content=InputTextMessageContent(f"🎵 {title}\n{url}"),
-            thumbnail_url=None,
         )
         inline_results.append(result)
     
-    # Если ничего не нашли
     if not inline_results:
         inline_results.append(
             InlineQueryResultArticle(
@@ -657,7 +764,6 @@ def main():
     global application
     print("🚀 Запуск бота и веб-сервера...")
     
-    # Запускаем веб-сервер в отдельном потоке
     threading.Thread(target=run_web, daemon=True).start()
     
     init_db()
