@@ -99,7 +99,7 @@
         }
         .track-item:active { background: rgba(255, 255, 255, 0.1); }
         
-        .track-cover { width: 52px; height: 52px; border-radius: 8px; flex-shrink: 0; }
+        .track-cover { width: 52px; height: 52px; border-radius: 8px; flex-shrink: 0; background: #1ed760; display: flex; align-items: center; justify-content: center; font-size: 20px; }
         .track-info { flex: 1; min-width: 0; }
         .track-title { font-weight: 500; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .track-artist { font-size: 13px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -123,7 +123,7 @@
         .mini-player.hidden { transform: translateY(100%); }
         
         .mini-player-content { display: flex; align-items: center; gap: 12px; }
-        .mini-player-cover { width: 48px; height: 48px; border-radius: 8px; flex-shrink: 0; }
+        .mini-player-cover { width: 48px; height: 48px; border-radius: 8px; flex-shrink: 0; background: #1ed760; display: flex; align-items: center; justify-content: center; font-size: 20px; }
         .mini-player-info { flex: 1; min-width: 0; }
         .mini-player-title { font-weight: 500; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .mini-player-artist { font-size: 12px; opacity: 0.7; }
@@ -158,7 +158,7 @@
         .expanded-close:active { background: rgba(255,255,255,0.1); }
         
         .expanded-content { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 20px; }
-        .expanded-cover { width: 280px; height: 280px; border-radius: 16px; margin-bottom: 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
+        .expanded-cover { width: 280px; height: 280px; border-radius: 16px; margin-bottom: 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.4); background: #1ed760; display: flex; align-items: center; justify-content: center; font-size: 80px; }
         .expanded-title { font-size: 24px; font-weight: 700; text-align: center; margin-bottom: 8px; }
         .expanded-artist { font-size: 16px; opacity: 0.7; text-align: center; margin-bottom: 32px; }
         
@@ -174,7 +174,7 @@
         .progress-fill { width: 0%; height: 100%; background: #1ed760; border-radius: 2px; transition: width 0.1s linear; }
         .time-info { display: flex; justify-content: space-between; font-size: 12px; opacity: 0.5; width: 100%; max-width: 400px; }
         
-        .expanded-actions { display: flex; gap: 30px; margin-top: 24px; }
+        .expanded-actions { display: flex; justify-content: center; gap: 30px; margin-top: 24px; }
         .expanded-actions button { background: rgba(255,255,255,0.1); border: none; padding: 10px 24px; border-radius: 30px; color: #fff; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
         
         .queue-section { width: 100%; max-width: 500px; margin-top: 24px; padding: 16px; background: rgba(255,255,255,0.05); border-radius: 16px; }
@@ -197,6 +197,7 @@
         }
         .toast.show { opacity: 1; }
         
+        /* Profile */
         .profile-section { text-align: center; }
         .avatar { width: 100px; height: 100px; border-radius: 50%; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center; font-size: 48px; background: linear-gradient(135deg, #1db954 0%, #191414 100%); }
         .profile-name { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
@@ -209,6 +210,21 @@
         .playlist-card { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 16px; margin-bottom: 12px; cursor: pointer; }
         .playlist-card:active { background: rgba(255,255,255,0.1); }
         .playlist-name { font-weight: 600; font-size: 16px; margin-bottom: 4px; }
+        
+        /* Modal */
+        .modal {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8); display: flex; align-items: center;
+            justify-content: center; z-index: 300; visibility: hidden; opacity: 0;
+            transition: all 0.3s;
+        }
+        .modal.active { visibility: visible; opacity: 1; }
+        .modal-content { background: #121212; border-radius: 20px; padding: 24px; width: 90%; max-width: 320px; }
+        .modal-content input { width: 100%; padding: 12px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; background: rgba(255,255,255,0.1); color: #fff; }
+        .modal-buttons { display: flex; gap: 12px; margin-top: 16px; }
+        .modal-buttons button { flex: 1; padding: 12px; border-radius: 12px; border: none; font-weight: 600; cursor: pointer; }
+        .modal-buttons button:first-child { background: #1ed760; color: #000; }
+        .modal-buttons button:last-child { background: rgba(255,255,255,0.1); color: #fff; }
     </style>
 </head>
 <body>
@@ -370,7 +386,7 @@
                 return `linear-gradient(135deg, hsl(${hue1}, 70%, 50%) 0%, hsl(${hue2}, 70%, 40%) 100%)`;
             }
             
-            // ==================== API (кэшированные) ====================
+            // ==================== API ====================
             const cache = new Map();
             async function fetchAPI(endpoint, options = {}) {
                 const key = endpoint + JSON.stringify(options);
@@ -560,8 +576,8 @@
                     document.getElementById('miniArtist').textContent = currentTrack.artist;
                     document.getElementById('expandedTitle').textContent = currentTrack.title;
                     document.getElementById('expandedArtist').textContent = currentTrack.artist;
-                    document.getElementById('expandedCover').style.background = getGradient(currentTrack.title);
-                    document.getElementById('miniCover').style.background = getGradient(currentTrack.title);
+                    if (document.getElementById('expandedCover')) document.getElementById('expandedCover').style.background = getGradient(currentTrack.title);
+                    if (document.getElementById('miniCover')) document.getElementById('miniCover').style.background = getGradient(currentTrack.title);
                     miniPlayer.classList.remove('hidden');
                 } else {
                     miniPlayer.classList.add('hidden');
@@ -605,8 +621,10 @@
             }
             
             function updatePlayButtons(playing) { 
-                document.getElementById('miniPlayPauseBtn').textContent = playing ? '⏸️' : '▶️'; 
-                document.getElementById('expandedPlayPauseBtn').textContent = playing ? '⏸️' : '▶️'; 
+                const miniPlay = document.getElementById('miniPlayPauseBtn');
+                const expPlay = document.getElementById('expandedPlayPauseBtn');
+                if (miniPlay) miniPlay.textContent = playing ? '⏸️' : '▶️';
+                if (expPlay) expPlay.textContent = playing ? '⏸️' : '▶️';
             }
             
             // Аудио события
@@ -616,15 +634,19 @@
             audio.ontimeupdate = () => {
                 if (audio.duration) {
                     const percent = (audio.currentTime / audio.duration) * 100;
-                    document.getElementById('expandedProgressFill').style.width = `${percent}%`;
-                    document.getElementById('expandedCurrentTime').textContent = formatTime(audio.currentTime);
-                    document.getElementById('expandedTotalTime').textContent = formatTime(audio.duration);
+                    const fill = document.getElementById('expandedProgressFill');
+                    const current = document.getElementById('expandedCurrentTime');
+                    const total = document.getElementById('expandedTotalTime');
+                    if (fill) fill.style.width = `${percent}%`;
+                    if (current) current.textContent = formatTime(audio.currentTime);
+                    if (total) total.textContent = formatTime(audio.duration);
                 }
             };
             
             function seek(e) {
-                const rect = document.getElementById('expandedProgressBar').getBoundingClientRect();
-                const percent = (e.clientX - rect.left) / rect.width;
+                const rect = document.getElementById('expandedProgressBar');
+                if (!rect) return;
+                const percent = (e.clientX - rect.getBoundingClientRect().left) / rect.clientWidth;
                 if (audio.duration) audio.currentTime = percent * audio.duration;
             }
             
@@ -637,7 +659,7 @@
                                  <div class="track-info"><div class="track-title">${escapeHtml(track.title)}</div><div class="track-artist">${escapeHtml(track.artist)}</div></div>
                                  <div class="track-duration">${formatTime(track.duration)}</div>`;
                 
-                // Обычное нажатие → сразу играет
+                // Нажатие → сразу играет
                 div.onclick = () => {
                     setQueue([track]);
                     playTrack(track);
@@ -646,10 +668,11 @@
                 return div;
             }
             
-            // ==================== ПОИСК (ускоренный) ====================
+            // ==================== ПОИСК ====================
             let searchTimeout;
             async function searchTracks(query) {
                 const container = document.getElementById('searchResults');
+                if (!container) return;
                 container.innerHTML = '<div class="loading">Поиск...</div>';
                 const tracks = await fetchAPI(`/search?q=${encodeURIComponent(query)}`);
                 if (!tracks || !tracks.length) { 
@@ -660,17 +683,27 @@
                 tracks.forEach(t => container.appendChild(createTrackElement({ ...t, track_id: t.id })));
             }
             
-            document.getElementById('searchInput').addEventListener('input', (e) => {
-                clearTimeout(searchTimeout);
-                const q = e.target.value.trim();
-                if (q.length >= 2) searchTimeout = setTimeout(() => searchTracks(q), 300);
-            });
+            const searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+                searchInput.addEventListener('input', (e) => {
+                    clearTimeout(searchTimeout);
+                    const q = e.target.value.trim();
+                    if (q.length >= 2) searchTimeout = setTimeout(() => searchTracks(q), 300);
+                });
+            }
             
             // ==================== НАВИГАЦИЯ ====================
             function switchTab(tabId) {
                 currentTab = tabId;
                 document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
-                ['search-tab', 'library-tab', 'playlists-tab', 'profile-tab'].forEach(id => document.getElementById(id)?.classList.toggle('hidden', id !== `${tabId}-tab`));
+                const searchTab = document.getElementById('search-tab');
+                const libraryTab = document.getElementById('library-tab');
+                const playlistsTab = document.getElementById('playlists-tab');
+                const profileTab = document.getElementById('profile-tab');
+                if (searchTab) searchTab.classList.toggle('hidden', tabId !== 'search');
+                if (libraryTab) libraryTab.classList.toggle('hidden', tabId !== 'library');
+                if (playlistsTab) playlistsTab.classList.toggle('hidden', tabId !== 'playlists');
+                if (profileTab) profileTab.classList.toggle('hidden', tabId !== 'profile');
                 if (tabId === 'library') loadLikes();
                 if (tabId === 'playlists') loadPlaylists();
             }
@@ -678,25 +711,53 @@
             document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
             
             // ==================== МОДАЛКИ ====================
-            window.closePlaylistModal = () => { document.getElementById('playlistModal').classList.remove('active'); document.getElementById('playlistName').value = ''; };
-            window.closeAddToPlaylistModal = () => document.getElementById('addToPlaylistModal').classList.remove('active');
+            window.closePlaylistModal = () => { 
+                const modal = document.getElementById('playlistModal');
+                const input = document.getElementById('playlistName');
+                if (modal) modal.classList.remove('active');
+                if (input) input.value = '';
+            };
+            window.closeAddToPlaylistModal = () => {
+                const modal = document.getElementById('addToPlaylistModal');
+                if (modal) modal.classList.remove('active');
+            };
             
-            function expandPlayer() { renderQueue(); expandedPlayer.classList.add('active'); }
-            function collapsePlayer() { expandedPlayer.classList.remove('active'); }
+            const createPlaylistBtn = document.getElementById('createPlaylistBtn');
+            if (createPlaylistBtn) {
+                createPlaylistBtn.onclick = () => {
+                    const modal = document.getElementById('playlistModal');
+                    if (modal) modal.classList.add('active');
+                };
+            }
             
-            document.getElementById('createPlaylistBtn').onclick = () => document.getElementById('playlistModal').classList.add('active');
-            document.getElementById('miniPlayPauseBtn').onclick = (e) => { e.stopPropagation(); togglePlayPause(); };
-            document.getElementById('miniPrevBtn').onclick = (e) => { e.stopPropagation(); playPrev(); };
-            document.getElementById('miniNextBtn').onclick = (e) => { e.stopPropagation(); playNext(); };
-            document.getElementById('expandedPlayPauseBtn').onclick = togglePlayPause;
-            document.getElementById('expandedPrevBtn').onclick = playPrev;
-            document.getElementById('expandedNextBtn').onclick = playNext;
-            document.getElementById('expandedLikeBtn').onclick = toggleLike;
-            document.getElementById('expandedPlaylistBtn').onclick = addCurrentToPlaylist;
-            document.getElementById('expandedProgressBar').onclick = seek;
-            miniPlayer.onclick = expandPlayer;
-            document.getElementById('closeExpandedBtn').onclick = collapsePlayer;
-            document.getElementById('closeExpandedBtn2').onclick = collapsePlayer;
+            // Плеер кнопки
+            const expandPlayer = () => { renderQueue(); if (expandedPlayer) expandedPlayer.classList.add('active'); };
+            const collapsePlayer = () => { if (expandedPlayer) expandedPlayer.classList.remove('active'); };
+            
+            const miniPrev = document.getElementById('miniPrevBtn');
+            const miniPlay = document.getElementById('miniPlayPauseBtn');
+            const miniNext = document.getElementById('miniNextBtn');
+            const expPrev = document.getElementById('expandedPrevBtn');
+            const expPlay = document.getElementById('expandedPlayPauseBtn');
+            const expNext = document.getElementById('expandedNextBtn');
+            const expLike = document.getElementById('expandedLikeBtn');
+            const expPlaylist = document.getElementById('expandedPlaylistBtn');
+            const progressBar = document.getElementById('expandedProgressBar');
+            const closeBtn1 = document.getElementById('closeExpandedBtn');
+            const closeBtn2 = document.getElementById('closeExpandedBtn2');
+            
+            if (miniPrev) miniPrev.onclick = (e) => { e.stopPropagation(); playPrev(); };
+            if (miniPlay) miniPlay.onclick = (e) => { e.stopPropagation(); togglePlayPause(); };
+            if (miniNext) miniNext.onclick = (e) => { e.stopPropagation(); playNext(); };
+            if (expPrev) expPrev.onclick = playPrev;
+            if (expPlay) expPlay.onclick = togglePlayPause;
+            if (expNext) expNext.onclick = playNext;
+            if (expLike) expLike.onclick = toggleLike;
+            if (expPlaylist) expPlaylist.onclick = addCurrentToPlaylist;
+            if (progressBar) progressBar.onclick = seek;
+            if (miniPlayer) miniPlayer.onclick = expandPlayer;
+            if (closeBtn1) closeBtn1.onclick = collapsePlayer;
+            if (closeBtn2) closeBtn2.onclick = collapsePlayer;
             
             // ==================== ЗАПУСК ====================
             loadProfile();
