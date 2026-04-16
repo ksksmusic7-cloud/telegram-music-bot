@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#007aff">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon-192.png">
     <title>Music Bot</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
@@ -157,7 +160,7 @@
             align-items: center;
         }
         
-        .like-btn {
+        .like-btn, .share-btn, .playlist-add-btn {
             background: none;
             border: none;
             font-size: 20px;
@@ -166,7 +169,7 @@
             transition: transform 0.1s ease;
         }
         
-        .like-btn:active {
+        .like-btn:active, .share-btn:active, .playlist-add-btn:active {
             transform: scale(0.9);
         }
         
@@ -177,7 +180,115 @@
             text-align: right;
         }
         
-        /* Profile Section */
+        /* Playlist Card */
+        .playlist-card {
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: transform 0.15s ease;
+        }
+        
+        .playlist-card:active {
+            transform: scale(0.98);
+        }
+        
+        .playlist-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .playlist-name {
+            font-weight: 600;
+            font-size: 16px;
+        }
+        
+        .playlist-stats {
+            font-size: 12px;
+            opacity: 0.5;
+        }
+        
+        .playlist-description {
+            font-size: 13px;
+            opacity: 0.7;
+        }
+        
+        .create-playlist-btn {
+            width: 100%;
+            padding: 14px;
+            background: var(--tg-theme-button-color, #007aff);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            border-radius: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            cursor: pointer;
+        }
+        
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+            visibility: hidden;
+            opacity: 0;
+            transition: all 0.3s ease;
+        }
+        
+        .modal.active {
+            visibility: visible;
+            opacity: 1;
+        }
+        
+        .modal-content {
+            background: var(--tg-theme-bg-color, #ffffff);
+            border-radius: 20px;
+            padding: 24px;
+            width: 90%;
+            max-width: 320px;
+        }
+        
+        .modal-content input, .modal-content textarea {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 12px;
+            border: 1px solid var(--tg-theme-hint-color, #e0e0e0);
+            border-radius: 12px;
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+            font-size: 14px;
+        }
+        
+        .modal-buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+        }
+        
+        .modal-buttons button {
+            flex: 1;
+            padding: 12px;
+            border-radius: 12px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        .modal-buttons button:first-child {
+            background: var(--tg-theme-button-color, #007aff);
+            color: white;
+        }
+        
         .profile-section {
             text-align: center;
         }
@@ -230,7 +341,26 @@
             margin-top: 4px;
         }
         
-        /* Empty State */
+        .install-pwa {
+            background: var(--tg-theme-secondary-bg-color, #f8f8f8);
+            border-radius: 16px;
+            padding: 16px;
+            text-align: center;
+            margin-top: 20px;
+        }
+        
+        .install-pwa button {
+            background: var(--tg-theme-button-color, #007aff);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 12px;
+            cursor: pointer;
+        }
+        
         .empty-state {
             text-align: center;
             padding: 60px 20px;
@@ -243,7 +373,6 @@
             opacity: 0.7;
         }
         
-        /* Player */
         .player {
             position: fixed;
             bottom: 70px;
@@ -279,6 +408,38 @@
         .hidden {
             display: none;
         }
+        
+        /* PWA Install Prompt */
+        .pwa-install-prompt {
+            position: fixed;
+            bottom: 80px;
+            left: 16px;
+            right: 16px;
+            background: var(--tg-theme-button-color, #007aff);
+            color: white;
+            padding: 12px 16px;
+            border-radius: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 101;
+            transform: translateY(100px);
+            transition: transform 0.3s ease;
+        }
+        
+        .pwa-install-prompt.show {
+            transform: translateY(0);
+        }
+        
+        .pwa-install-prompt button {
+            background: white;
+            color: var(--tg-theme-button-color, #007aff);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -288,8 +449,12 @@
             <span>Поиск</span>
         </button>
         <button class="tab" data-tab="library">
-            <div class="tab-icon">📚</div>
-            <span>Моя музыка</span>
+            <div class="tab-icon">❤️</div>
+            <span>Любимое</span>
+        </button>
+        <button class="tab" data-tab="playlists">
+            <div class="tab-icon">📀</div>
+            <span>Плейлисты</span>
         </button>
         <button class="tab" data-tab="profile">
             <div class="tab-icon">👤</div>
@@ -308,13 +473,23 @@
             <div class="track-list" id="searchResults"></div>
         </div>
         
-        <!-- Библиотека -->
+        <!-- Библиотека (лайки) -->
         <div id="library-tab" class="hidden">
             <div class="header">
-                <h1>Моя музыка</h1>
-                <p>Любимые треки</p>
+                <h1>Любимое</h1>
+                <p>Треки, которые тебе понравились</p>
             </div>
             <div class="track-list" id="libraryList"></div>
+        </div>
+        
+        <!-- Плейлисты -->
+        <div id="playlists-tab" class="hidden">
+            <div class="header">
+                <h1>Плейлисты</h1>
+                <p>Создавай и делись подборками</p>
+            </div>
+            <button class="create-playlist-btn" id="createPlaylistBtn">+ Новый плейлист</button>
+            <div id="playlistsList"></div>
         </div>
         
         <!-- Профиль -->
@@ -329,6 +504,19 @@
                         <div class="stat-value" id="likesCount">0</div>
                         <div class="stat-label">Лайков</div>
                     </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="playlistsCount">0</div>
+                        <div class="stat-label">Плейлистов</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="listenedCount">0</div>
+                        <div class="stat-label">Прослушано</div>
+                    </div>
+                </div>
+                
+                <div class="install-pwa" id="pwaInstall" style="display: none;">
+                    <div>📱 Установи приложение</div>
+                    <button id="installPwaBtn">Установить на рабочий стол</button>
                 </div>
             </div>
         </div>
@@ -337,6 +525,36 @@
     <div class="player" id="player">
         <div class="player-title" id="playerTitle"></div>
         <audio id="audio" controls preload="none"></audio>
+    </div>
+    
+    <!-- Модальное окно для создания плейлиста -->
+    <div class="modal" id="playlistModal">
+        <div class="modal-content">
+            <h3>Новый плейлист</h3>
+            <input type="text" id="playlistName" placeholder="Название плейлиста">
+            <textarea id="playlistDesc" placeholder="Описание (необязательно)" rows="3"></textarea>
+            <div class="modal-buttons">
+                <button onclick="createPlaylist()">Создать</button>
+                <button onclick="closePlaylistModal()">Отмена</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Модальное окно добавления в плейлист -->
+    <div class="modal" id="addToPlaylistModal">
+        <div class="modal-content">
+            <h3>Добавить в плейлист</h3>
+            <div id="playlistSelect"></div>
+            <div class="modal-buttons">
+                <button onclick="addCurrentTrackToPlaylist()">Добавить</button>
+                <button onclick="closeAddToPlaylistModal()">Отмена</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="pwa-install-prompt" id="pwaPrompt">
+        <span>📱 Установи приложение</span>
+        <button id="pwaInstallBtn">Установить</button>
     </div>
     
     <script>
@@ -352,8 +570,28 @@
         let currentAudio = null;
         let currentUrl = null;
         let likedTracks = new Map();
+        let userPlaylists = [];
+        let currentTrackForPlaylist = null;
+        let deferredPrompt = null;
         
-        // Инициализация профиля
+        // ===== PWA УСТАНОВКА =====
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            document.getElementById('pwaPrompt').classList.add('show');
+            document.getElementById('pwaInstall').style.display = 'block';
+        });
+        
+        document.getElementById('pwaInstallBtn')?.addEventListener('click', async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const result = await deferredPrompt.userChoice;
+                deferredPrompt = null;
+                document.getElementById('pwaPrompt').classList.remove('show');
+            }
+        });
+        
+        // ===== ИНИЦИАЛИЗАЦИЯ =====
         async function initProfile() {
             if (!telegramId) return;
             
@@ -375,10 +613,17 @@
             document.getElementById('displayName').textContent = profile.display_name || telegramFirstName;
             document.getElementById('username').textContent = `@${telegramUsername || 'user'}`;
             
+            if (profile.stats) {
+                document.getElementById('likesCount').textContent = profile.stats.likes;
+                document.getElementById('playlistsCount').textContent = profile.stats.playlists;
+                document.getElementById('listenedCount').textContent = profile.stats.listened;
+            }
+            
             await loadLikes();
+            await loadPlaylists();
         }
         
-        // Загрузка лайков
+        // ===== ЛАЙКИ =====
         async function loadLikes() {
             if (!telegramId) return;
             
@@ -392,7 +637,6 @@
             
             document.getElementById('likesCount').textContent = likes.length;
             
-            // Обновляем библиотеку
             const libraryList = document.getElementById('libraryList');
             if (likes.length === 0) {
                 libraryList.innerHTML = '<div class="empty-state">Нет сохранённых треков<br>❤️ Лайкайте музыку, чтобы она появилась здесь</div>';
@@ -404,7 +648,130 @@
             }
         }
         
-        // Создание элемента трека
+        // ===== ПЛЕЙЛИСТЫ =====
+        async function loadPlaylists() {
+            if (!telegramId) return;
+            
+            const response = await fetch(`/api/playlists/${telegramId}`);
+            userPlaylists = await response.json();
+            
+            document.getElementById('playlistsCount').textContent = userPlaylists.length;
+            
+            const playlistsList = document.getElementById('playlistsList');
+            if (userPlaylists.length === 0) {
+                playlistsList.innerHTML = '<div class="empty-state">У вас пока нет плейлистов<br>Создайте первый!</div>';
+            } else {
+                playlistsList.innerHTML = '';
+                userPlaylists.forEach(playlist => {
+                    const div = document.createElement('div');
+                    div.className = 'playlist-card';
+                    div.onclick = () => openPlaylist(playlist);
+                    div.innerHTML = `
+                        <div class="playlist-header">
+                            <span class="playlist-name">${escapeHtml(playlist.name)}</span>
+                            <span class="playlist-stats">${playlist.is_public ? '🌍 Публичный' : '🔒 Приватный'}</span>
+                        </div>
+                        <div class="playlist-description">${escapeHtml(playlist.description || 'Без описания')}</div>
+                    `;
+                    playlistsList.appendChild(div);
+                });
+            }
+        }
+        
+        async function openPlaylist(playlist) {
+            const response = await fetch(`/api/playlists/${playlist.id}/tracks`);
+            const tracks = await response.json();
+            
+            if (tracks.length === 0) {
+                tg.showPopup({
+                    title: playlist.name,
+                    message: 'В плейлисте пока нет треков',
+                    buttons: [{type: 'ok'}]
+                });
+            } else {
+                let message = `📀 ${playlist.name}\n\n`;
+                tracks.forEach((track, i) => {
+                    message += `${i+1}. ${track.title} — ${track.artist}\n`;
+                });
+                tg.showPopup({
+                    title: playlist.name,
+                    message: message.slice(0, 200),
+                    buttons: [{type: 'ok'}]
+                });
+            }
+        }
+        
+        function createPlaylist() {
+            const name = document.getElementById('playlistName').value.trim();
+            const description = document.getElementById('playlistDesc').value.trim();
+            
+            if (!name) {
+                tg.showPopup({title: 'Ошибка', message: 'Введите название плейлиста', buttons: [{type: 'ok'}]});
+                return;
+            }
+            
+            fetch(`/api/playlists/${telegramId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, description, is_public: false })
+            }).then(() => {
+                closePlaylistModal();
+                loadPlaylists();
+                tg.showPopup({title: 'Успех', message: 'Плейлист создан', buttons: [{type: 'ok'}]});
+            });
+        }
+        
+        async function addToPlaylist(track) {
+            currentTrackForPlaylist = track;
+            const selectDiv = document.getElementById('playlistSelect');
+            
+            if (userPlaylists.length === 0) {
+                tg.showPopup({
+                    title: 'Нет плейлистов',
+                    message: 'Сначала создайте плейлист',
+                    buttons: [{type: 'ok'}]
+                });
+                return;
+            }
+            
+            selectDiv.innerHTML = userPlaylists.map(playlist => `
+                <button onclick="addTrackToPlaylist(${playlist.id})" style="width:100%; padding:12px; margin-bottom:8px; background:var(--tg-theme-secondary-bg-color); border:none; border-radius:12px; text-align:left; cursor:pointer;">
+                    <strong>${escapeHtml(playlist.name)}</strong><br>
+                    <small>${playlist.is_public ? 'Публичный' : 'Приватный'}</small>
+                </button>
+            `).join('');
+            
+            document.getElementById('addToPlaylistModal').classList.add('active');
+        }
+        
+        async function addTrackToPlaylist(playlistId) {
+            await fetch(`/api/playlists/${playlistId}/tracks`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    track_id: currentTrackForPlaylist.id || currentTrackForPlaylist.track_id,
+                    title: currentTrackForPlaylist.title,
+                    artist: currentTrackForPlaylist.artist,
+                    url: currentTrackForPlaylist.url,
+                    thumbnail: currentTrackForPlaylist.thumbnail
+                })
+            });
+            closeAddToPlaylistModal();
+            tg.showPopup({title: 'Успех', message: 'Трек добавлен в плейлист', buttons: [{type: 'ok'}]});
+        }
+        
+        async function sharePlaylist(playlistId) {
+            const response = await fetch(`/api/playlists/${playlistId}/share`, { method: 'POST' });
+            const data = await response.json();
+            
+            tg.showPopup({
+                title: 'Поделиться',
+                message: `Ссылка на плейлист: ${data.share_url}`,
+                buttons: [{type: 'ok'}]
+            });
+        }
+        
+        // ===== СОЗДАНИЕ ЭЛЕМЕНТА ТРЕКА =====
         function createTrackElement(track, isLiked = false) {
             const div = document.createElement('div');
             div.className = 'track-item';
@@ -418,13 +785,17 @@
                     <button class="like-btn" data-id="${track.track_id || track.id}" data-liked="${isLiked}">
                         ${isLiked ? '❤️' : '🤍'}
                     </button>
+                    <button class="playlist-add-btn" data-id="${track.track_id || track.id}">📀</button>
+                    <button class="share-btn" data-url="${track.url}">📤</button>
                     <div class="track-duration">${formatDuration(track.duration)}</div>
                 </div>
             `;
             
             div.onclick = (e) => {
-                if (e.target.classList.contains('like-btn')) return;
-                playTrack(track.url, track.title);
+                if (e.target.classList.contains('like-btn') || 
+                    e.target.classList.contains('share-btn') || 
+                    e.target.classList.contains('playlist-add-btn')) return;
+                playTrack(track.url, track.title, track.track_id || track.id, track.artist);
             };
             
             const likeBtn = div.querySelector('.like-btn');
@@ -453,14 +824,26 @@
                     likeBtn.dataset.liked = 'true';
                 }
                 await loadLikes();
-                if (currentTab === 'search' && searchResults) {
-                    refreshSearchResults();
-                }
+                if (currentTab === 'search') refreshSearchResults();
+            };
+            
+            const shareBtn = div.querySelector('.share-btn');
+            shareBtn.onclick = (e) => {
+                e.stopPropagation();
+                tg.sendData(JSON.stringify({ action: 'share', url: track.url }));
+                tg.showPopup({title: 'Поделиться', message: 'Трек отправлен в чат!', buttons: [{type: 'ok'}]});
+            };
+            
+            const playlistBtn = div.querySelector('.playlist-add-btn');
+            playlistBtn.onclick = (e) => {
+                e.stopPropagation();
+                addToPlaylist(track);
             };
             
             return div;
         }
         
+        // ===== ПОИСК =====
         async function searchTracks(query) {
             const searchResults = document.getElementById('searchResults');
             searchResults.innerHTML = '<div class="loading">Поиск...</div>';
@@ -495,7 +878,8 @@
             }
         }
         
-        async function playTrack(url, title) {
+        // ===== ПЛЕЕР =====
+        async function playTrack(url, title, trackId, artist) {
             const player = document.getElementById('player');
             const audio = document.getElementById('audio');
             const playerTitle = document.getElementById('playerTitle');
@@ -505,6 +889,15 @@
             playerTitle.textContent = title;
             player.classList.add('active');
             currentUrl = url;
+            
+            // Сохраняем в историю
+            if (telegramId && trackId) {
+                await fetch(`/api/history/${telegramId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ track_id: trackId, title: title, artist: artist })
+                });
+            }
             
             try {
                 const response = await fetch(`/download?url=${encodeURIComponent(url)}`);
@@ -534,7 +927,7 @@
             return div.innerHTML;
         }
         
-        // Tab переключение
+        // ===== TAB ПЕРЕКЛЮЧЕНИЕ =====
         function switchTab(tabId) {
             currentTab = tabId;
             
@@ -545,19 +938,35 @@
             
             document.getElementById('search-tab').classList.add('hidden');
             document.getElementById('library-tab').classList.add('hidden');
+            document.getElementById('playlists-tab').classList.add('hidden');
             document.getElementById('profile-tab').classList.add('hidden');
             
             document.getElementById(`${tabId}-tab`).classList.remove('hidden');
             
-            if (tabId === 'library') {
-                loadLikes();
-            }
+            if (tabId === 'library') loadLikes();
+            if (tabId === 'playlists') loadPlaylists();
         }
         
-        // Event listeners
+        // ===== MODAL =====
+        function closePlaylistModal() {
+            document.getElementById('playlistModal').classList.remove('active');
+            document.getElementById('playlistName').value = '';
+            document.getElementById('playlistDesc').value = '';
+        }
+        
+        function closeAddToPlaylistModal() {
+            document.getElementById('addToPlaylistModal').classList.remove('active');
+            currentTrackForPlaylist = null;
+        }
+        
+        // ===== EVENT LISTENERS =====
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => switchTab(tab.dataset.tab));
         });
+        
+        document.getElementById('createPlaylistBtn').onclick = () => {
+            document.getElementById('playlistModal').classList.add('active');
+        };
         
         let searchTimeout;
         const searchInput = document.getElementById('searchInput');
@@ -569,7 +978,7 @@
             }
         });
         
-        // Запуск
+        // ===== ЗАПУСК =====
         initProfile();
         switchTab('search');
     </script>
