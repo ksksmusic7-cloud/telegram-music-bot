@@ -50,17 +50,17 @@ def search():
         'no_warnings': True,
         'extract_flat': True,
         'default_search': 'scsearch',
-        'playlistend': 10,
+        'playlistend': 20,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"scsearch10:{query}", download=False)
+            info = ydl.extract_info(f"scsearch20:{query}", download=False)
             results = []
             if info and 'entries' in info:
-                for entry in info['entries'][:10]:
+                for entry in info['entries'][:20]:
                     if entry:
                         results.append({
-                            'title': entry.get('title', 'Без названия')[:60],
+                            'title': entry.get('title', 'Без названия')[:80],
                             'artist': entry.get('uploader', 'SoundCloud'),
                             'duration': entry.get('duration', 0),
                             'url': entry.get('webpage_url', ''),
@@ -87,7 +87,6 @@ def download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if info:
-                # Ищем лучший аудиоформат
                 for f in info.get('formats', []):
                     if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
                         return json.dumps({'url': f.get('url'), 'title': info.get('title', '')})
@@ -392,7 +391,6 @@ def get_main_keyboard():
         [InlineKeyboardButton("🎵 Популярное", callback_data='popular')],
         [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
         [InlineKeyboardButton("⚙️ Качество", callback_data='quality')],
-        [InlineKeyboardButton("🖥️ Открыть приложение", web_app={"url": "https://telegram-music-bot-a9vg.onrender.com"})],
         [InlineKeyboardButton("❓ Помощь", callback_data='help')],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -422,8 +420,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Обложки и метаданные\n"
         "• Очередь запросов\n"
         "• Инлайн-режим (работает в любом чате)\n"
-        "• Выбор качества (128/192/320 kbps)\n"
-        "• Веб-приложение (кнопка ниже)",
+        "• Выбор качества (128/192/320 kbps)",
         reply_markup=get_main_keyboard(),
         parse_mode='Markdown'
     )
@@ -434,7 +431,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 • Просто напиши название песни или исполнителя
 • Используй кнопки для быстрого доступа
-• Нажми "Открыть приложение" для веб-интерфейса
 • Введи @bot_username текст в любом чате (инлайн-режим)
 
 🎵 *Примеры запросов:*
@@ -584,22 +580,75 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
             print(f"WebApp ошибка: {e}")
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Инлайн-режим: показываем кнопку-заглушку, бот ищет после отправки"""
+    """Инлайн-режим с 20 результатами"""
     query_text = update.inline_query.query.strip()
     
     if not query_text:
         await update.inline_query.answer([], cache_time=0)
         return
     
-    # Заглушка — один результат, который отправит текст в чат
-    result = InlineQueryResultArticle(
-        id="1",
-        title=f"🔍 Найти: {query_text[:50]}",
-        description="Нажми, чтобы бот начал поиск на SoundCloud/YouTube",
-        input_message_content=InputTextMessageContent(query_text)
-    )
+    # Быстрый поиск через yt-dlp
+    def search_sync():
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'default_search': 'scsearch',
+            'playlistend': 20,
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"scsearch20:{query_text}", download=False)
+                results = []
+                if info and 'entries' in info:
+                    for entry in info['entries'][:20]:
+                        if entry:
+                            title = entry.get('title', 'Без названия')[:60]
+                            uploader = entry.get('uploader', 'SoundCloud')
+                            duration = entry.get('duration', 0)
+                            url = entry.get('webpage_url', '')
+                            if url:
+                                results.append((title, uploader, duration, url))
+                return results
+        except Exception as e:
+            print(f"Инлайн поиск ошибка: {e}")
+            return []
     
-    await update.inline_query.answer([result], cache_time=0)
+    # Запускаем поиск в отдельном потоке с таймаутом
+    try:
+        import concurrent.futures
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            results = await loop.run_in_executor(pool, search_sync)
+    except Exception as e:
+        print(f"Таймаут: {e}")
+        results = []
+    
+    # Формируем инлайн-результаты
+    inline_results = []
+    for i, (title, uploader, duration, url) in enumerate(results[:20]):
+        duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else "?"
+        result = InlineQueryResultArticle(
+            id=str(i),
+            title=title,
+            description=f"{uploader} • {duration_str}",
+            input_message_content=InputTextMessageContent(f"🎵 {title}\n{url}"),
+            thumbnail_url=None,
+        )
+        inline_results.append(result)
+    
+    # Если ничего не нашли
+    if not inline_results:
+        inline_results.append(
+            InlineQueryResultArticle(
+                id="0",
+                title=f"Ничего не найдено: {query_text[:40]}",
+                description="Попробуйте другой запрос",
+                input_message_content=InputTextMessageContent(f"Не удалось найти: {query_text}")
+            )
+        )
+    
+    await update.inline_query.answer(inline_results[:20], cache_time=30)
 
 # ===== ЗАПУСК =====
 application = None
