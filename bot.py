@@ -2,15 +2,16 @@ import os
 import sqlite3
 import asyncio
 import threading
+import json
+import hashlib
+import platform
 from datetime import datetime, timedelta
-from functools import lru_cache
 from typing import Dict, Optional, Tuple, List
 from collections import deque
-import json
-import re
-import hashlib
+from urllib.parse import urlparse
 
 import yt_dlp
+import requests
 from flask import Flask, send_from_directory, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import (
@@ -18,7 +19,7 @@ from telegram.ext import (
     filters, ContextTypes, InlineQueryHandler
 )
 
-# ==================== КОНФИГУРАЦИЯ ====================
+# ==================== КОНФИГ ====================
 TOKEN = os.environ.get("BOT_TOKEN", "8410866218:AAFwRJj2RbRuEAMJayfAYnpAOMMdEKdpA_A")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "okey2010").lower().replace("@", "")
 APP_URL = os.environ.get("APP_URL", "https://telegram-music-bot-a9vg.onrender.com")
@@ -29,21 +30,139 @@ DEFAULT_QUALITY = '192'
 # Состояния
 user_queues: Dict[int, deque] = {}
 user_processing: Dict[int, bool] = {}
-downloading: Dict[str, bool] = {}
 
-# ==================== ВЕБ-СЕРВЕР ====================
-web_app = Flask(__name__)
-
-# ==================== ОПТИМИЗИРОВАННАЯ БД ====================
+# ==================== РАСШИРЕННАЯ БД ====================
 DB_PATH = '/app/data/music_bot.db' if os.path.exists('/app/data') else 'music_bot.db'
 
-def get_db():
-    """Контекстный менеджер для БД с автоматическим закрытием"""
-    return sqlite3.connect(DB_PATH)
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Основная таблица пользователей (расширенная)
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        chat_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        language_code TEXT,
+        is_premium BOOLEAN DEFAULT 0,
+        is_bot BOOLEAN DEFAULT 0,
+        phone_number TEXT,
+        bio TEXT,
+        registered_at TIMESTAMP,
+        last_active TIMESTAMP,
+        last_ip TEXT,
+        user_agent TEXT,
+        device_type TEXT,
+        os_name TEXT,
+        os_version TEXT,
+        app_version TEXT,
+        total_requests INTEGER DEFAULT 0,
+        total_downloads INTEGER DEFAULT 0,
+        total_likes INTEGER DEFAULT 0,
+        total_playlists INTEGER DEFAULT 0,
+        total_listening_time INTEGER DEFAULT 0,
+        quality TEXT DEFAULT '192',
+        referral_code TEXT,
+        referred_by INTEGER,
+        is_blocked BOOLEAN DEFAULT 0,
+        block_reason TEXT,
+        notes TEXT
+    )''')
+    
+    # Таблица лайков
+    c.execute('''CREATE TABLE IF NOT EXISTS user_likes (
+        telegram_id INTEGER,
+        track_id TEXT,
+        track_title TEXT,
+        track_artist TEXT,
+        track_url TEXT,
+        track_thumbnail TEXT,
+        liked_at TIMESTAMP,
+        PRIMARY KEY (telegram_id, track_id)
+    )''')
+    
+    # Таблица плейлистов
+    c.execute('''CREATE TABLE IF NOT EXISTS playlists (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id INTEGER,
+        name TEXT,
+        description TEXT,
+        cover_url TEXT,
+        is_public BOOLEAN DEFAULT 0,
+        created_at TIMESTAMP,
+        updated_at TIMESTAMP
+    )''')
+    
+    # Треки в плейлистах
+    c.execute('''CREATE TABLE IF NOT EXISTS playlist_tracks (
+        playlist_id INTEGER,
+        track_id TEXT,
+        track_title TEXT,
+        track_artist TEXT,
+        track_url TEXT,
+        track_thumbnail TEXT,
+        added_at TIMESTAMP,
+        position INTEGER,
+        PRIMARY KEY (playlist_id, track_id)
+    )''')
+    
+    # Сессии пользователей
+    c.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        session_id TEXT,
+        login_time TIMESTAMP,
+        logout_time TIMESTAMP,
+        ip_address TEXT,
+        device_info TEXT
+    )''')
+    
+    # Действия пользователей
+    c.execute('''CREATE TABLE IF NOT EXISTS user_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        action_type TEXT,
+        action_data TEXT,
+        created_at TIMESTAMP
+    )''')
+    
+    # Реферальная система
+    c.execute('''CREATE TABLE IF NOT EXISTS referrals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        referrer_chat_id INTEGER,
+        referred_chat_id INTEGER,
+        created_at TIMESTAMP,
+        is_active BOOLEAN DEFAULT 1
+    )''')
+    
+    # Ежедневная статистика
+    c.execute('''CREATE TABLE IF NOT EXISTS user_daily_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        date DATE,
+        searches INTEGER DEFAULT 0,
+        downloads INTEGER DEFAULT 0,
+        likes_added INTEGER DEFAULT 0,
+        listening_time INTEGER DEFAULT 0,
+        UNIQUE(chat_id, date)
+    )''')
+    
+    # Индексы для скорости
+    c.execute('CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_users_referral ON users(referral_code)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_likes_telegram_id ON user_likes(telegram_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_playlists_telegram_id ON playlists(telegram_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_actions_chat_id ON user_actions(chat_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_actions_created_at ON user_actions(created_at)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON user_daily_stats(date)')
+    
+    conn.commit()
+    conn.close()
 
 def execute_query(query, params=(), fetch_one=False, fetch_all=False):
-    """Выполняет запрос с автоматическим закрытием"""
-    with get_db() as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
         c.execute(query, params)
         if fetch_one:
@@ -53,339 +172,409 @@ def execute_query(query, params=(), fetch_one=False, fetch_all=False):
         conn.commit()
         return c.lastrowid if query.strip().upper().startswith('INSERT') else None
 
-@lru_cache(maxsize=1000)
-def get_cached_user_quality(chat_id: int) -> str:
-    """Кэш качества пользователя"""
-    result = execute_query("SELECT quality FROM users WHERE chat_id = ?", (chat_id,), fetch_one=True)
-    return result[0] if result and result[0] else DEFAULT_QUALITY
+def log_action(chat_id: int, action_type: str, action_data: dict = None):
+    """Логирует действие пользователя"""
+    execute_query("INSERT INTO user_actions (chat_id, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
+                  (chat_id, action_type, json.dumps(action_data) if action_data else None, datetime.now()))
 
-def update_user_quality(chat_id: int, quality: str):
-    execute_query("UPDATE users SET quality = ? WHERE chat_id = ?", (quality, chat_id))
-    get_cached_user_quality.cache_clear()
+def update_daily_stats(chat_id: int, searches=0, downloads=0, likes=0, listening=0):
+    """Обновляет ежедневную статистику"""
+    today = datetime.now().date()
+    execute_query('''INSERT INTO user_daily_stats (chat_id, date, searches, downloads, likes_added, listening_time)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(chat_id, date) DO UPDATE SET
+                     searches = searches + ?, downloads = downloads + ?,
+                     likes_added = likes_added + ?, listening_time = listening_time + ?''',
+                  (chat_id, today, searches, downloads, likes, listening, searches, downloads, likes, listening))
 
-def init_db():
-    """Инициализация БД с индексами"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (chat_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
-                  last_name TEXT, registered_at TIMESTAMP, last_active TIMESTAMP,
-                  total_requests INTEGER DEFAULT 0, total_downloads INTEGER DEFAULT 0,
-                  quality TEXT DEFAULT '192')''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS search_history
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER,
-                  query TEXT, source TEXT, timestamp TIMESTAMP, success BOOLEAN)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS user_profiles
-                 (telegram_id INTEGER PRIMARY KEY, username TEXT, display_name TEXT, created_at TIMESTAMP)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS user_likes
-                 (telegram_id INTEGER, track_id TEXT, track_title TEXT, track_artist TEXT,
-                  track_url TEXT, track_thumbnail TEXT, liked_at TIMESTAMP,
-                  PRIMARY KEY (telegram_id, track_id))''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS playlists
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER,
-                  name TEXT, created_at TIMESTAMP)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS playlist_tracks
-                 (playlist_id INTEGER, track_id TEXT, track_title TEXT, track_artist TEXT,
-                  track_url TEXT, track_thumbnail TEXT, added_at TIMESTAMP, position INTEGER,
-                  PRIMARY KEY (playlist_id, track_id))''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS listening_history
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER,
-                  track_id TEXT, track_title TEXT, track_artist TEXT, listened_at TIMESTAMP)''')
-    
-    # Индексы
-    c.execute('CREATE INDEX IF NOT EXISTS idx_search_history_chat_id ON search_history(chat_id)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_search_history_timestamp ON search_history(timestamp)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_likes_telegram_id ON user_likes(telegram_id)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_playlists_telegram_id ON playlists(telegram_id)')
-    
-    conn.commit()
-    conn.close()
+def get_device_info(update: Update) -> dict:
+    """Извлекает информацию об устройстве пользователя"""
+    user = update.effective_user
+    return {
+        'language_code': user.language_code,
+        'is_premium': user.is_premium,
+        'is_bot': user.is_bot,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'username': user.username
+    }
 
-def add_user(chat_id: int, username: str, first_name: str, last_name: str):
+def add_user_full(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавляет пользователя с максимальным количеством данных"""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Генерируем реферальный код
+    referral_code = hashlib.md5(f"{user.id}_{datetime.now()}".encode()).hexdigest()[:8]
+    
+    # Извлекаем информацию из контекста (если есть)
+    user_agent = None
+    ip_address = None
+    if context.bot.defaults:
+        user_agent = getattr(context.bot.defaults, 'user_agent', None)
+    
     execute_query('''INSERT OR IGNORE INTO users 
-                     (chat_id, username, first_name, last_name, registered_at, last_active, total_requests, total_downloads)
-                     VALUES (?, ?, ?, ?, ?, ?, 0, 0)''',
-                  (chat_id, username or "", first_name or "", last_name or "", datetime.now(), datetime.now()))
+        (chat_id, username, first_name, last_name, language_code, is_premium, is_bot,
+         registered_at, last_active, total_requests, total_downloads, quality, referral_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)''',
+        (user.id, user.username or "", user.first_name or "", user.last_name or "",
+         user.language_code, 1 if user.is_premium else 0, 0,
+         datetime.now(), datetime.now(), DEFAULT_QUALITY, referral_code))
+    
+    # Обновляем существующего пользователя
+    execute_query('''UPDATE users SET 
+        last_active = ?, username = ?, first_name = ?, last_name = ?,
+        language_code = ?, is_premium = ?
+        WHERE chat_id = ?''',
+        (datetime.now(), user.username or "", user.first_name or "", user.last_name or "",
+         user.language_code, 1 if user.is_premium else 0, user.id))
+    
+    log_action(user.id, 'start', get_device_info(update))
+    return referral_code
 
-def update_activity(chat_id: int, is_download: bool = False):
-    if is_download:
-        execute_query('''UPDATE users SET last_active = ?, total_requests = total_requests + 1, total_downloads = total_downloads + 1
-                         WHERE chat_id = ?''', (datetime.now(), chat_id))
-    else:
-        execute_query('''UPDATE users SET last_active = ?, total_requests = total_requests + 1
-                         WHERE chat_id = ?''', (datetime.now(), chat_id))
+def update_user_stats(chat_id: int, field: str, increment: int = 1):
+    """Увеличивает счётчик пользователя"""
+    execute_query(f"UPDATE users SET {field} = {field} + ?, last_active = ? WHERE chat_id = ?",
+                  (increment, datetime.now(), chat_id))
 
-def save_search(chat_id: int, query: str, source: str, success: bool):
-    execute_query('''INSERT INTO search_history (chat_id, query, source, timestamp, success)
-                     VALUES (?, ?, ?, ?, ?)''',
-                  (chat_id, query, source, datetime.now(), success))
+def get_user_full_info(chat_id: int) -> dict:
+    """Получает полную информацию о пользователе"""
+    user = execute_query('''SELECT * FROM users WHERE chat_id = ?''', (chat_id,), fetch_one=True)
+    if not user:
+        return {}
+    
+    columns = ['chat_id', 'username', 'first_name', 'last_name', 'language_code', 'is_premium', 'is_bot',
+               'phone_number', 'bio', 'registered_at', 'last_active', 'last_ip', 'user_agent',
+               'device_type', 'os_name', 'os_version', 'app_version', 'total_requests', 'total_downloads',
+               'total_likes', 'total_playlists', 'total_listening_time', 'quality', 'referral_code',
+               'referred_by', 'is_blocked', 'block_reason', 'notes']
+    
+    return {columns[i]: user[i] for i in range(len(columns))}
 
-def get_user_count() -> int:
-    result = execute_query("SELECT COUNT(*) FROM users", fetch_one=True)
-    return result[0] if result else 0
+# ==================== ВЕБ-СЕРВЕР ====================
+web_app = Flask(__name__)
 
-def get_total_requests() -> int:
-    result = execute_query("SELECT SUM(total_requests) FROM users", fetch_one=True)
-    return result[0] or 0
+@web_app.route('/')
+def serve_index():
+    return send_from_directory('.', 'index.html')
 
-def get_total_downloads() -> int:
-    result = execute_query("SELECT SUM(total_downloads) FROM users", fetch_one=True)
-    return result[0] or 0
+@web_app.route('/api/profile/<int:telegram_id>')
+def api_profile(telegram_id):
+    user = get_user_full_info(telegram_id)
+    if not user:
+        return jsonify({'exists': False})
+    
+    likes_count = execute_query("SELECT COUNT(*) FROM user_likes WHERE telegram_id = ?", (telegram_id,), fetch_one=True)[0]
+    playlists_count = execute_query("SELECT COUNT(*) FROM playlists WHERE telegram_id = ?", (telegram_id,), fetch_one=True)[0]
+    
+    return jsonify({
+        'exists': True,
+        'telegram_id': telegram_id,
+        'username': user.get('username'),
+        'display_name': user.get('first_name'),
+        'registered_at': user.get('registered_at'),
+        'last_active': user.get('last_active'),
+        'total_requests': user.get('total_requests'),
+        'total_downloads': user.get('total_downloads'),
+        'quality': user.get('quality'),
+        'stats': {
+            'likes': likes_count,
+            'playlists': playlists_count
+        }
+    })
 
-def get_today_stats() -> Dict:
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    searches = execute_query("SELECT COUNT(*) FROM search_history WHERE timestamp > ? AND success = 1", (today,), fetch_one=True)[0]
-    new_users = execute_query("SELECT COUNT(*) FROM users WHERE registered_at > ?", (today,), fetch_one=True)[0]
-    return {"searches": searches, "new_users": new_users}
+@web_app.route('/api/likes/<int:telegram_id>', methods=['GET', 'POST', 'DELETE'])
+def api_likes(telegram_id):
+    if request.method == 'GET':
+        likes = execute_query('''SELECT track_id, track_title, track_artist, track_url, track_thumbnail, liked_at 
+                                 FROM user_likes WHERE telegram_id = ? ORDER BY liked_at DESC''', 
+                              (telegram_id,), fetch_all=True) or []
+        return jsonify([{
+            'track_id': l[0], 'title': l[1], 'artist': l[2],
+            'url': l[3], 'thumbnail': l[4], 'liked_at': l[5]
+        } for l in likes])
+    
+    elif request.method == 'POST':
+        data = request.json
+        execute_query('''INSERT OR REPLACE INTO user_likes 
+                         (telegram_id, track_id, track_title, track_artist, track_url, track_thumbnail, liked_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                      (telegram_id, data.get('track_id'), data.get('title'), data.get('artist'),
+                       data.get('url'), data.get('thumbnail', ''), datetime.now()))
+        update_user_stats(telegram_id, 'total_likes')
+        update_daily_stats(telegram_id, likes=1)
+        log_action(telegram_id, 'like', {'track_id': data.get('track_id'), 'title': data.get('title')})
+        return jsonify({'success': True})
+    
+    elif request.method == 'DELETE':
+        track_id = request.args.get('track_id')
+        if track_id:
+            execute_query("DELETE FROM user_likes WHERE telegram_id = ? AND track_id = ?", (telegram_id, track_id))
+            update_user_stats(telegram_id, 'total_likes', -1)
+        return jsonify({'success': True})
 
-def get_popular_tracks(limit: int = 10):
-    result = execute_query('''SELECT query, COUNT(*) as cnt FROM search_history 
-                               WHERE success = 1 GROUP BY query ORDER BY cnt DESC LIMIT ?''', (limit,), fetch_all=True)
-    return result or []
+@web_app.route('/api/playlists/<int:telegram_id>', methods=['GET', 'POST'])
+def api_playlists(telegram_id):
+    if request.method == 'GET':
+        playlists = execute_query('''SELECT id, name, description, cover_url, is_public, created_at 
+                                     FROM playlists WHERE telegram_id = ? ORDER BY created_at DESC''',
+                                  (telegram_id,), fetch_all=True) or []
+        return jsonify([{
+            'id': p[0], 'name': p[1], 'description': p[2],
+            'cover_url': p[3], 'is_public': bool(p[4]), 'created_at': p[5]
+        } for p in playlists])
+    
+    elif request.method == 'POST':
+        data = request.json
+        pid = execute_query('''INSERT INTO playlists (telegram_id, name, description, cover_url, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?)''',
+                            (telegram_id, data.get('name'), data.get('description', ''),
+                             data.get('cover_url', ''), datetime.now(), datetime.now()))
+        update_user_stats(telegram_id, 'total_playlists')
+        log_action(telegram_id, 'create_playlist', {'playlist_id': pid, 'name': data.get('name')})
+        return jsonify({'id': pid, 'success': True})
 
-def get_user_quality(chat_id: int) -> str:
-    return get_cached_user_quality(chat_id)
+@web_app.route('/api/playlists/<int:playlist_id>/tracks', methods=['GET', 'POST', 'DELETE'])
+def api_playlist_tracks(playlist_id):
+    if request.method == 'GET':
+        tracks = execute_query('''SELECT track_id, track_title, track_artist, track_url, track_thumbnail, position
+                                  FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC''',
+                               (playlist_id,), fetch_all=True) or []
+        return jsonify([{
+            'track_id': t[0], 'title': t[1], 'artist': t[2],
+            'url': t[3], 'thumbnail': t[4], 'position': t[5]
+        } for t in tracks])
+    
+    elif request.method == 'POST':
+        data = request.json
+        pos = execute_query("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,), fetch_one=True)[0]
+        execute_query('''INSERT OR REPLACE INTO playlist_tracks 
+                         (playlist_id, track_id, track_title, track_artist, track_url, track_thumbnail, added_at, position)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (playlist_id, data.get('track_id'), data.get('title'), data.get('artist'),
+                       data.get('url'), data.get('thumbnail', ''), datetime.now(), pos))
+        log_action(None, 'add_to_playlist', {'playlist_id': playlist_id, 'track_id': data.get('track_id')})
+        return jsonify({'success': True})
+    
+    elif request.method == 'DELETE':
+        track_id = request.args.get('track_id')
+        if track_id:
+            execute_query("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?", (playlist_id, track_id))
+        return jsonify({'success': True})
 
-def set_user_quality(chat_id: int, quality: str):
-    update_user_quality(chat_id, quality)
+@web_app.route('/api/stats/<int:telegram_id>')
+def api_user_stats(telegram_id):
+    """Возвращает подробную статистику пользователя"""
+    # Последние 7 дней
+    week_ago = datetime.now() - timedelta(days=7)
+    daily = execute_query('''SELECT date, searches, downloads, likes_added, listening_time
+                             FROM user_daily_stats 
+                             WHERE chat_id = ? AND date > ? 
+                             ORDER BY date DESC''', (telegram_id, week_ago.date()), fetch_all=True) or []
+    
+    # Последние действия
+    actions = execute_query('''SELECT action_type, action_data, created_at
+                               FROM user_actions 
+                               WHERE chat_id = ? 
+                               ORDER BY created_at DESC LIMIT 20''', (telegram_id,), fetch_all=True) or []
+    
+    return jsonify({
+        'daily_stats': [{'date': d[0], 'searches': d[1], 'downloads': d[2], 'likes': d[3], 'listening': d[4]} for d in daily],
+        'recent_actions': [{'type': a[0], 'data': json.loads(a[1]) if a[1] else None, 'time': a[2]} for a in actions]
+    })
 
-# ==================== ПРОВЕРКА АДМИНА ====================
+@web_app.route('/search')
+def api_search():
+    query = request.args.get('q', '')
+    if not query:
+        return jsonify([])
+    ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'default_search': 'scsearch', 'playlistend': 20}
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"scsearch20:{query}", download=False)
+            results = []
+            if info and 'entries' in info:
+                for entry in info['entries'][:20]:
+                    if entry:
+                        results.append({
+                            'id': entry.get('id', ''),
+                            'title': entry.get('title', 'Без названия')[:80],
+                            'artist': entry.get('uploader', 'SoundCloud'),
+                            'duration': entry.get('duration', 0),
+                            'url': entry.get('webpage_url', ''),
+                            'thumbnail': entry.get('thumbnail', '')
+                        })
+            return jsonify(results)
+    except:
+        return jsonify([])
+
+@web_app.route('/download')
+def api_download():
+    url = request.args.get('url', '')
+    if not url:
+        return jsonify({'error': 'No URL'})
+    ydl_opts = {'quiet': True, 'no_warnings': True, 'format': 'bestaudio/best'}
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info:
+                for f in info.get('formats', []):
+                    if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                        return jsonify({'url': f.get('url'), 'title': info.get('title', '')})
+                if info.get('url'):
+                    return jsonify({'url': info.get('url'), 'title': info.get('title', '')})
+    except:
+        pass
+    return jsonify({'error': 'Download failed'})
+
+@web_app.route('/api/top_users')
+def api_top_users():
+    """Топ пользователей по активности (только для админа)"""
+    admin_key = request.headers.get('X-Admin-Key', '')
+    if admin_key != hashlib.md5(ADMIN_USERNAME.encode()).hexdigest():
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    top = execute_query('''SELECT chat_id, username, first_name, total_requests, total_downloads, total_likes
+                           FROM users ORDER BY total_requests DESC LIMIT 20''', fetch_all=True) or []
+    return jsonify([{
+        'chat_id': t[0], 'username': t[1], 'name': t[2],
+        'requests': t[3], 'downloads': t[4], 'likes': t[5]
+    } for t in top])
+
+# ==================== ТЕЛЕГРАМ КОМАНДЫ ====================
 async def is_admin(update: Update) -> bool:
     if not ADMIN_USERNAME:
         return False
     user = update.effective_user
     return user.username and user.username.lower() == ADMIN_USERNAME
 
-# ==================== КОМАНДЫ ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    add_user(user.id, user.username or "", user.first_name or "", user.last_name or "")
+    referral_code = add_user_full(update, context)
+    
     await update.message.reply_text(
         f"🎵 Привет, {user.first_name}!\n\n"
+        f"Твой реферальный код: `{referral_code}`\n\n"
         "Я музыкальный бот. Просто напиши название песни или исполнителя.\n\n"
         "✨ *Возможности:*\n"
-        "• Поиск на SoundCloud и YouTube\n"
-        "• Обложки и метаданные\n"
-        "• Очередь запросов\n"
-        "• Инлайн-режим\n"
-        "• Веб-приложение с профилем и плейлистами",
+        "• Поиск на SoundCloud\n"
+        "• Лайки и плейлисты\n"
+        "• Веб-приложение\n"
+        "• Статистика активности",
         parse_mode='Markdown'
     )
+    update_user_stats(user.id, 'total_requests')
+    log_action(user.id, 'start')
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = """
-📖 *Как пользоваться ботом:*
+async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать информацию о себе"""
+    user_id = update.effective_user.id
+    user_info = get_user_full_info(user_id)
+    
+    if not user_info:
+        await update.message.reply_text("❌ Информация не найдена")
+        return
+    
+    likes_count = execute_query("SELECT COUNT(*) FROM user_likes WHERE telegram_id = ?", (user_id,), fetch_one=True)[0]
+    playlists_count = execute_query("SELECT COUNT(*) FROM playlists WHERE telegram_id = ?", (user_id,), fetch_one=True)[0]
+    
+    text = f"""
+📊 *Ваша статистика*
 
-• Просто напиши название песни или исполнителя
-• Используй кнопки для быстрого доступа
-• Введи @bot_username текст в любом чате (инлайн-режим)
+👤 *Имя:* {user_info.get('first_name', '?')} {user_info.get('last_name', '')}
+🔖 *Username:* @{user_info.get('username', 'нет')}
+🌐 *Язык:* {user_info.get('language_code', '?')}
+💎 *Premium:* {'Да' if user_info.get('is_premium') else 'Нет'}
 
-🎵 *Примеры:*
-• Imagine Dragons Believer
-• Billie Eilish
-• Metallica
+📈 *Активность:*
+• Запросов: {user_info.get('total_requests', 0)}
+• Скачиваний: {user_info.get('total_downloads', 0)}
+• Лайков: {likes_count}
+• Плейлистов: {playlists_count}
 
-⚙️ *Команды:*
-/start - начать
-/help - помощь
-/stats - статистика (только админ)
-/getdb - скачать БД (только админ)
+🔑 *Реферальный код:* `{user_info.get('referral_code', 'нет')}`
 
-📌 *Источники:* SoundCloud → YouTube
+📅 *В боте с:* {user_info.get('registered_at', '?')[:16]}
+🕐 *Последний визит:* {user_info.get('last_active', '?')[:16]}
+
+⚙️ *Качество:* {user_info.get('quality', '192')} kbps
     """
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update):
-        await update.message.reply_text("⛔ Только для администратора.")
+        await update.message.reply_text("⛔ Только для админа")
         return
     
-    total_users = get_user_count()
-    total_requests = get_total_requests()
-    total_downloads = get_total_downloads()
-    today = get_today_stats()
+    total_users = execute_query("SELECT COUNT(*) FROM users", fetch_one=True)[0]
+    total_requests = execute_query("SELECT SUM(total_requests) FROM users", fetch_one=True)[0] or 0
+    total_downloads = execute_query("SELECT SUM(total_downloads) FROM users", fetch_one=True)[0] or 0
+    total_likes = execute_query("SELECT COUNT(*) FROM user_likes", fetch_one=True)[0]
+    total_playlists = execute_query("SELECT COUNT(*) FROM playlists", fetch_one=True)[0]
     
-    text = f"""
-📊 *Статистика бота*
+    # Активные за сегодня
+    today = datetime.now().date()
+    active_today = execute_query("SELECT COUNT(DISTINCT chat_id) FROM user_daily_stats WHERE date = ?", (today,), fetch_one=True)[0]
+    
+    # Премиум пользователи
+    premium_users = execute_query("SELECT COUNT(*) FROM users WHERE is_premium = 1", fetch_one=True)[0]
+    
+    await update.message.reply_text(
+        f"📊 *Общая статистика*\n\n"
+        f"👥 *Всего пользователей:* {total_users}\n"
+        f"💎 *Premium:* {premium_users}\n"
+        f"📈 *Активных сегодня:* {active_today}\n\n"
+        f"🔍 *Поисков:* {total_requests}\n"
+        f"🎵 *Скачиваний:* {total_downloads}\n"
+        f"❤️ *Лайков:* {total_likes}\n"
+        f"📀 *Плейлистов:* {total_playlists}",
+        parse_mode='Markdown'
+    )
 
-👥 *Пользователи:* {total_users}
-📈 *Всего запросов:* {total_requests}
-🎵 *Всего скачиваний:* {total_downloads}
-
-📅 *За сегодня:*
-• Поисков: {today['searches']}
-• Новых пользователей: {today['new_users']}
-    """
-    await update.message.reply_text(text, parse_mode='Markdown')
-
-# ==================== КОМАНДА GETDB ====================
 async def get_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправить файл базы данных (только для админа)"""
     if not await is_admin(update):
         await update.message.reply_text("⛔ Доступ запрещён")
         return
-    
-    # Проверяем существование файла
     if os.path.exists(DB_PATH):
-        try:
-            await update.message.reply_document(
-                document=open(DB_PATH, 'rb'),
-                filename='music_bot_backup.db',
-                caption=f'📊 Бэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}\n👥 Пользователей: {get_user_count()}'
-            )
-        except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+        await update.message.reply_document(
+            document=open(DB_PATH, 'rb'),
+            filename='music_bot_backup.db',
+            caption=f'📊 Бэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+        )
     else:
         await update.message.reply_text("❌ Файл БД не найден")
 
-# ==================== КЛАВИАТУРЫ ====================
-def get_main_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("🎵 Популярное", callback_data='popular')],
-        [InlineKeyboardButton("📊 Статистика", callback_data='stats')],
-        [InlineKeyboardButton("⚙️ Качество", callback_data='quality')],
-        [InlineKeyboardButton("❓ Помощь", callback_data='help')],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_quality_keyboard(current_quality: str):
-    keyboard = []
-    for q, name in QUALITIES.items():
-        status = "✅ " if q == current_quality else ""
-        keyboard.append([InlineKeyboardButton(f"{status}{name}", callback_data=f'set_quality_{q}')])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='back')])
-    return InlineKeyboardMarkup(keyboard)
-
-# ==================== ОБРАБОТЧИКИ ====================
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = update.effective_chat.id
-    
-    if query.data == 'help':
-        text = "📖 *Помощь*\n\nПросто напиши название песни или исполнителя.\nБот найдёт трек на SoundCloud (или YouTube) и отправит тебе."
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
-    
-    elif query.data == 'stats':
-        if not await is_admin(update):
-            await query.edit_message_text("⛔ Только для админа.", reply_markup=get_main_keyboard())
-            return
-        total_users = get_user_count()
-        total_requests = get_total_requests()
-        total_downloads = get_total_downloads()
-        text = f"📊 *Статистика*\n\n👥 Пользователей: {total_users}\n📈 Запросов: {total_requests}\n🎵 Скачиваний: {total_downloads}"
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
-    
-    elif query.data == 'popular':
-        popular = get_popular_tracks(10)
-        if popular:
-            text = "🎵 *Самые популярные запросы:*\n\n"
-            for i, (track, count) in enumerate(popular, 1):
-                text += f"{i}. {track} — {count} раз(а)\n"
-        else:
-            text = "Пока нет популярных запросов."
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_main_keyboard())
-    
-    elif query.data == 'quality':
-        current = get_user_quality(chat_id)
-        await query.edit_message_text("⚙️ *Выбери качество:*", parse_mode='Markdown', reply_markup=get_quality_keyboard(current))
-    
-    elif query.data == 'back':
-        await query.edit_message_text("🎵 Главное меню", reply_markup=get_main_keyboard())
-    
-    elif query.data.startswith('set_quality_'):
-        quality = query.data.replace('set_quality_', '')
-        if quality in QUALITIES:
-            set_user_quality(chat_id, QUALITIES[quality])
-            await query.edit_message_text(f"✅ Качество: *{QUALITIES[quality]}*", parse_mode='Markdown', reply_markup=get_main_keyboard())
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query_text = update.message.text.strip()
-    chat_id = update.message.chat_id
-    
-    if not query_text or query_text.startswith('/'):
+    query = update.message.text.strip()
+    if not query or query.startswith('/'):
         return
     
-    update_activity(chat_id, is_download=False)
-    msg = await update.message.reply_text(f"🔍 Ищу: *{query_text}*", parse_mode='Markdown')
+    update_user_stats(update.effective_user.id, 'total_requests')
+    update_daily_stats(update.effective_user.id, searches=1)
+    log_action(update.effective_user.id, 'search', {'query': query})
     
-    # Здесь должна быть логика поиска и скачивания
-    # (упрощённо для компактности)
-    
-    await msg.edit_text(f"✅ Добавлено в очередь: {query_text}")
-    save_search(chat_id, query_text, "SoundCloud", True)
-    update_activity(chat_id, is_download=True)
-
-async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = update.message.web_app_data
-    if data and data.data:
-        try:
-            payload = json.loads(data.data)
-            if payload.get('action') == 'search':
-                query = payload.get('query')
-                if query:
-                    await handle_message(update, context)
-        except Exception as e:
-            print(f"WebApp ошибка: {e}")
-
-async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query_text = update.inline_query.query.strip()
-    
-    if not query_text:
-        await update.inline_query.answer([], cache_time=0)
-        return
-    
-    result = InlineQueryResultArticle(
-        id="1",
-        title=f"🔍 Найти: {query_text[:50]}",
-        description="Нажми, чтобы бот начал поиск",
-        input_message_content=InputTextMessageContent(query_text)
-    )
-    await update.inline_query.answer([result], cache_time=0)
-
-# ==================== ВЕБ-ЭНДПОЙНТЫ ====================
-@web_app.route('/')
-def serve_index():
-    return send_from_directory('.', 'index.html')
+    await update.message.reply_text(f"🔍 Ищу: {query}\n(функция поиска MP3 в разработке)")
 
 # ==================== ЗАПУСК ====================
-application = None
+def run_web():
+    web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False, use_reloader=False)
 
 def main():
-    global application
-    print("🚀 Запуск бота...")
-    
-    # Запуск веб-сервера
-    threading.Thread(target=lambda: web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False, use_reloader=False), daemon=True).start()
-    
+    print("🚀 Запуск бота с расширенной БД...")
+    threading.Thread(target=run_web, daemon=True).start()
     init_db()
     
-    application = Application.builder().token(TOKEN).build()
-    
-    # Команды
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("getdb", get_db_command))  # <--- НОВАЯ КОМАНДА
-    
-    # Обработчики
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
-    application.add_handler(InlineQueryHandler(inline_query))
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("me", me))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("getdb", get_db_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("✅ Бот запущен!")
-    print(f"Команды: /start, /help, /stats, /getdb")
     print(f"Админ: @{ADMIN_USERNAME}")
-    
-    application.run_polling()
+    print("Добавлены команды: /me — статистика пользователя")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
