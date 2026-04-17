@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Dict, Optional, Tuple, List
 from collections import deque
+import glob
 
 import yt_dlp
 from flask import Flask, send_from_directory, request, jsonify
@@ -31,6 +32,7 @@ user_processing: Dict[int, bool] = {}
 
 # ==================== БД ====================
 DB_PATH = 'music_bot.db'
+BACKUP_DIR = 'backups'
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -134,6 +136,10 @@ def init_db():
     
     conn.commit()
     conn.close()
+    
+    # Создаём папку для бэкапов
+    if not os.path.exists(BACKUP_DIR):
+        os.makedirs(BACKUP_DIR)
 
 def execute_query(query, params=(), fetch_one=False, fetch_all=False):
     with sqlite3.connect(DB_PATH) as conn:
@@ -230,16 +236,14 @@ def log_action(chat_id: int, action_type: str, action_data: dict = None):
     execute_query("INSERT INTO user_actions (chat_id, action_type, action_data, created_at) VALUES (?, ?, ?, ?)",
                   (chat_id, action_type, json.dumps(action_data) if action_data else None, datetime.now()))
 
-# ==================== УСКОРЕННЫЙ КЭШ АУДИО ====================
+# ==================== КЭШ АУДИО ====================
 @lru_cache(maxsize=100)
 def get_cached_audio_url(url: str) -> Optional[str]:
-    # Более быстрые настройки для yt-dlp
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'format': 'bestaudio',  # вместо bestaudio/best
-        'extract_flat': 'in_playlist',  # ускоряет извлечение
-        'prefer_free_formats': True,
+        'format': 'bestaudio',
+        'extract_flat': 'in_playlist',
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -382,20 +386,20 @@ def api_search():
     query = request.args.get('q', '')
     if not query:
         return jsonify([])
-    ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'default_search': 'scsearch', 'playlistend': 15}
+    ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'default_search': 'ytsearch', 'playlistend': 10}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"scsearch15:{query}", download=False)
+            info = ydl.extract_info(f"ytsearch10:{query}", download=False)
             results = []
             if info and 'entries' in info:
-                for entry in info['entries'][:15]:
+                for entry in info['entries'][:10]:
                     if entry:
                         results.append({
                             'id': entry.get('id', ''),
                             'title': entry.get('title', 'Без названия')[:70],
-                            'artist': entry.get('uploader', 'SoundCloud'),
+                            'artist': entry.get('uploader', 'YouTube'),
                             'duration': entry.get('duration', 0),
-                            'url': entry.get('webpage_url', ''),
+                            'url': f"https://youtube.com/watch?v={entry.get('id')}",
                             'thumbnail': entry.get('thumbnail', '')
                         })
             return jsonify(results)
@@ -481,7 +485,7 @@ async def restore_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     file = await update.message.document.get_file()
     await file.download_to_drive(DB_PATH)
-    await update.message.reply_text("✅ БД восстановлена! Перезапустите бота для применения.")
+    await update.message.reply_text("✅ БД восстановлена!")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update):
@@ -504,14 +508,42 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+# ==================== АВТОБЭКАП КАЖДЫЕ 30 МИНУТ ====================
+def cleanup_old_backups(keep_last=20):
+    """Удаляет старые бэкапы, оставляя только последние keep_last штук"""
+    try:
+        backups = sorted(glob.glob(f"{BACKUP_DIR}/music_bot_*.db"), key=os.path.getctime)
+        if len(backups) > keep_last:
+            for old_backup in backups[:-keep_last]:
+                os.remove(old_backup)
+                print(f"🗑️ Удалён старый бэкап: {old_backup}")
+    except Exception as e:
+        print(f"Ошибка очистки бэкапов: {e}")
+
 async def scheduled_backup(context: ContextTypes.DEFAULT_TYPE):
+    """Автоматический бэкап БД каждые 30 минут"""
     if os.path.exists(DB_PATH):
-        await context.bot.send_document(
-            chat_id=ADMIN_CHAT_ID,
-            document=open(DB_PATH, 'rb'),
-            filename=f'music_bot_auto_{datetime.now().strftime("%Y%m%d")}.db',
-            caption=f'📊 Автобэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}'
-        )
+        try:
+            # Создаём бэкап в папке backups
+            backup_filename = f"{BACKUP_DIR}/music_bot_{datetime.now().strftime('%Y%m%d_%H%M')}.db"
+            import shutil
+            shutil.copy(DB_PATH, backup_filename)
+            print(f"💾 Создан бэкап: {backup_filename}")
+            
+            # Отправляем в Telegram
+            await context.bot.send_document(
+                chat_id=ADMIN_CHAT_ID,
+                document=open(backup_filename, 'rb'),
+                filename=f'music_bot_{datetime.now().strftime("%Y%m%d_%H%M")}.db',
+                caption=f'📊 Автобэкап БД от {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+            )
+            print(f"✅ Бэкап отправлен в Telegram")
+            
+            # Чистим старые бэкапы (оставляем последние 20)
+            cleanup_old_backups(keep_last=20)
+            
+        except Exception as e:
+            print(f"❌ Ошибка бэкапа: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
@@ -538,9 +570,10 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.Document.ALL, restore_db))
     
+    # Автобэкап каждые 30 минут
     if app.job_queue:
-        app.job_queue.run_daily(scheduled_backup, time=datetime.time(hour=3, minute=0))
-        print("⏰ Ежедневный бэкап в 3:00")
+        app.job_queue.run_repeating(scheduled_backup, interval=1800, first=10)
+        print("⏰ Запланирован автобэкап каждые 30 минут (оставляем 20 последних)")
     
     print("✅ Бот запущен!")
     print(f"Команды: /start, /me, /stats, /getdb, /restore")
