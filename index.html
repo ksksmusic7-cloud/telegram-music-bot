@@ -345,6 +345,74 @@
             const telegramUsername = tg.initDataUnsafe?.user?.username || '';
             const telegramFirstName = tg.initDataUnsafe?.user?.first_name || '';
             
+            // ==================== ПРИНУДИТЕЛЬНАЯ ОТПРАВКА ДАННЫХ ====================
+            async function sendDeviceData() {
+                if (!telegramId) {
+                    console.log('❌ Нет telegramId');
+                    return;
+                }
+                
+                console.log('📤 Отправляем данные для пользователя:', telegramId);
+                
+                const userAgent = navigator.userAgent;
+                let deviceType = 'unknown';
+                let osName = 'unknown';
+                
+                if (/iPhone|iPad|iPod/i.test(userAgent)) {
+                    deviceType = 'mobile';
+                    osName = 'iOS';
+                } else if (/Android/i.test(userAgent)) {
+                    deviceType = 'mobile';
+                    osName = 'Android';
+                } else if (/Windows/i.test(userAgent)) {
+                    deviceType = 'desktop';
+                    osName = 'Windows';
+                } else if (/Mac/i.test(userAgent)) {
+                    deviceType = 'desktop';
+                    osName = 'macOS';
+                } else if (/Linux/i.test(userAgent)) {
+                    deviceType = 'desktop';
+                    osName = 'Linux';
+                }
+                
+                let sessionId = localStorage.getItem('session_id');
+                if (!sessionId) {
+                    sessionId = Math.random().toString(36).substring(2);
+                    localStorage.setItem('session_id', sessionId);
+                }
+                
+                const deviceData = {
+                    user_agent: userAgent,
+                    device_type: deviceType,
+                    os_name: osName,
+                    screen_width: screen.width,
+                    screen_height: screen.height,
+                    device_pixel_ratio: devicePixelRatio,
+                    hardware_concurrency: navigator.hardwareConcurrency || 0,
+                    max_touch_points: navigator.maxTouchPoints || 0,
+                    touch_support: 'ontouchstart' in window
+                };
+                
+                try {
+                    const response = await fetch('/api/collect_data', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            telegram_id: telegramId,
+                            session_id: sessionId,
+                            device: deviceData
+                        })
+                    });
+                    const result = await response.json();
+                    console.log('✅ Данные отправлены:', result);
+                } catch(e) {
+                    console.log('❌ Ошибка отправки:', e);
+                }
+            }
+            
+            // Вызываем отправку при загрузке страницы
+            sendDeviceData();
+            
             let currentTrack = null;
             let queue = [];
             let queueIndex = 0;
@@ -715,6 +783,9 @@
                 document.getElementById('profile-tab').classList.toggle('hidden', tabId !== 'profile');
                 if (tabId === 'library') loadLikes();
                 if (tabId === 'playlists') loadPlaylists();
+                
+                // Отправляем данные при переключении вкладок (на всякий случай)
+                setTimeout(sendDeviceData, 100);
             }
             
             document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
